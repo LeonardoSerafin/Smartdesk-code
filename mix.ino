@@ -96,6 +96,7 @@ static const uint32_t TIMEOUT_AUTOBOOK = 20000;
 static const uint32_t LONG_PRESS_CONFIRM_MS = 2000;
 static const uint32_t BOOK_REQUEST_TIMEOUT_MS = 7000;
 static const uint32_t BOOK_ERROR_DISPLAY_MS = 5000;
+static const uint32_t BOOK_START_OFFSET_S = 2;
 static const uint32_t PRESENCE_INVITE_DELAY_MS = 30000;
 static const uint32_t ABSENCE_CANCEL_TIMEOUT_MS = 120000;
 static const uint32_t ABSENCE_CANCEL_WINDOW_S = 600;
@@ -1198,8 +1199,12 @@ void createManualBooking() {
     return;
   }
 
+  uint32_t startTs = static_cast<uint32_t>(nowTs + BOOK_START_OFFSET_S);
+  Serial.print("[BOOK] start offset sec=");
+  Serial.println((unsigned long)BOOK_START_OFFSET_S);
+
   if (!startCreateBookingRequest(currentBookingUidHex,
-                                 static_cast<uint32_t>(nowTs),
+                                 startTs,
                                  static_cast<uint32_t>(tEnd))) {
     Serial.println("[BOOK] Invio prenotazione manuale fallito");
   }
@@ -1224,7 +1229,9 @@ void createAutoBooking() {
   time_t nowTs = time(nullptr);
   if (nowTs <= 0) return;
 
-  if (!startCreateBookingRequest("AUTO", static_cast<uint32_t>(nowTs), static_cast<uint32_t>(nowTs + 3600))) {
+  uint32_t startTs = static_cast<uint32_t>(nowTs + BOOK_START_OFFSET_S);
+
+  if (!startCreateBookingRequest("AUTO", startTs, static_cast<uint32_t>(nowTs + 3600))) {
     Serial.println("[AUTO] Invio auto-book fallito");
   }
 }
