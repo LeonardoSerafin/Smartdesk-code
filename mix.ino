@@ -1385,16 +1385,16 @@ void runPresenceAutomations() {
         }
       } else {
         checkInPresenceStartMs = 0;
-        if(trascorso >= ABSENCE_CANCEL_TIMEOUT_MS) {
-          autoCancelActiveReservation();
-          startAssenza = 0;
-          renderView(true);
-          Serial.println("[AUTO] Prenotazione cancellata per assenza");
-        }
       } 
-
     } else {
+      startAssenza = 0;
       checkInPresenceStartMs = 0;
+    }
+    if(!r.checkedIn && !withinCancelWindow) {
+      Serial.println("[AUTO] Prenotazione cancellata per assenza");
+      startAssenza = 0;
+      autoCancelActiveReservation();
+      renderView(true);
     }
     /*
     if (!r.checkedIn && !presenzaConfermata) {
