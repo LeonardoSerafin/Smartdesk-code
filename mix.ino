@@ -96,11 +96,15 @@ static const uint32_t TIMEOUT_AUTOBOOK = 20000;
 static const uint32_t LONG_PRESS_CONFIRM_MS = 2000;
 static const uint32_t BOOK_REQUEST_TIMEOUT_MS = 7000;
 static const uint32_t BOOK_ERROR_DISPLAY_MS = 5000;
-static const uint32_t BOOK_START_OFFSET_S = 2;
+static const uint32_t BOOK_START_OFFSET_S = 1;
 static const uint32_t PRESENCE_INVITE_DELAY_MS = 30000;
-static const uint32_t ABSENCE_CANCEL_TIMEOUT_MS = 120000;
+static const uint32_t ABSENCE_CANCEL_TIMEOUT_MS = 600000;
 static const uint32_t ABSENCE_CANCEL_WINDOW_S = 600;
+static const uint32_t CHECKIN_CONFIRM_OCCUPIED_MS = 30000;
 static const int PRESENCE_PROGRESS_BLOCKS = 10;
+static const int BOOK_TIME_STEP_MIN = 15;
+static const uint32_t BOOK_REPEAT_INITIAL_DELAY_MS = 450;
+static const uint32_t BOOK_REPEAT_INTERVAL_MS = 140;
 
 const uint8_t MASTER_UID_SUFFIX = 0x0B;
 
@@ -119,6 +123,8 @@ struct Reservation {
   uint32_t oraInizio;
   uint32_t oraFine;
   bool localOnly;
+  bool checkedIn;
+  bool bookedFromTable;
 };
 
 static const int MAX_RESERVATIONS = 24;
@@ -168,6 +174,7 @@ uint32_t bookingPendingOraInizio = 0;
 uint32_t bookingPendingOraFine = 0;
 uint64_t bookingPendingReservationId = 0;
 String bookingPendingUid;
+bool bookingPendingFromTable = false;
 uint32_t nextBookingMsgId = 1;
 
 bool bookingErrorVisible = false;
@@ -188,12 +195,12 @@ unsigned long primaPresenza = 0;
 String rigaRadar;
 
 // -------------------- Stato UI --------------------
-int sceltaGiorno = 0; // 0=oggi, 1=domani
-int sceltaOra = 9;    // 07..22
-int sottomenu = 0;    // 0 giorno, 1 ora
+int bookingEndMinutes = 10 * 60; // minuti da mezzanotte, step 15
 
 bool bloccoLeds = false;
 unsigned long startAssenza = 0;
+unsigned long checkInPresenceStartMs = 0;
+int64_t checkInTrackingReservationId = 0;
 unsigned long startPresenza = 0;
 unsigned long lastDisplayRefreshMs = 0;
 bool presenceInviteVisible = false;
@@ -213,6 +220,10 @@ TouchButtonState btnOut3 = {TOUCH_OUT3_PIN, false, false, false, 0};
 TouchButtonState btnOut4 = {TOUCH_OUT4_PIN, false, false, false, 0};
 
 unsigned long bookingConfirmHoldStartMs = 0;
+unsigned long bookingMinusHoldStartMs = 0;
+unsigned long bookingMinusLastRepeatMs = 0;
+unsigned long bookingPlusHoldStartMs = 0;
+unsigned long bookingPlusLastRepeatMs = 0;
 
 // -------------------- Forward declarations --------------------
 bool ensurePeer(const uint8_t *mac);
@@ -244,6 +255,9 @@ void handleButtons();
 void handleNfc();
 void drawBookingDetails();
 void drawBookingConfirmProgress(uint32_t holdMs);
+void resetBookingEndSelection();
+void adjustBookingEndMinutes(int steps);
+void processBookingTimeHold(bool minusDown, bool plusDown);
 void renderView(bool force = false);
 void drawPresenceProgressBlocks(uint32_t elapsedMs);
 void showPresenceInviteScreen();
@@ -255,9 +269,9 @@ String uidToHex(const uint8_t *uid, uint8_t uidLen);
 int findActiveReservationIndex(time_t nowTs);
 int findReservationIndexById(int64_t id);
 void clearReservations();
-void addReservation(int64_t id, const String &nome, uint32_t oraInizio, uint32_t oraFine, bool localOnly);
+void addReservation(int64_t id, const String &nome, uint32_t oraInizio, uint32_t oraFine, bool localOnly, bool checkedIn, bool bookedFromTable);
 void removeReservationAt(int idx);
-bool startCreateBookingRequest(const String &uidHex, uint32_t oraInizio, uint32_t oraFine);
+bool startCreateBookingRequest(const String &uidHex, uint32_t oraInizio, uint32_t oraFine, bool fromTable);
 bool startCancelBookingRequest(const Reservation &r);
 void autoCancelActiveReservation();
 void createAutoBooking();
@@ -445,7 +459,7 @@ void showInvalidEndTimeError() {
   tft.println("Ritorno a prenotazione...");
 }
 
-bool startCreateBookingRequest(const String &uidHex, uint32_t oraInizio, uint32_t oraFine) {
+bool startCreateBookingRequest(const String &uidHex, uint32_t oraInizio, uint32_t oraFine, bool fromTable) {
   if (bookingPending) return false;
   if (!hubMacKnown) {
     showBookingError("Hub non disponibile");
@@ -483,6 +497,7 @@ bool startCreateBookingRequest(const String &uidHex, uint32_t oraInizio, uint32_
   bookingPendingOraFine = oraFine;
   bookingPendingReservationId = 0;
   bookingPendingUid = safeUid;
+  bookingPendingFromTable = fromTable;
 
   writeOnLcd("PRENOTAZIONE", "Verifica disponibilita...", TFT_CYAN);
   return true;
@@ -525,6 +540,7 @@ bool startCancelBookingRequest(const Reservation &r) {
   bookingPendingStartMs = millis();
   bookingPendingReservationId = req.reservationId;
   bookingPendingUid = r.nome;
+  bookingPendingFromTable = false;
 
   writeOnLcd("PRENOTAZIONE", "Cancellazione in corso...", TFT_YELLOW);
   return true;
@@ -556,9 +572,14 @@ void processPendingBookingResponse() {
                      bookingPendingUid,
                      bookingPendingOraInizio,
                      bookingPendingOraFine,
-                     false);
+                     false,
+                     bookingPendingFromTable,
+                     bookingPendingFromTable);
       Serial.print("[BOOK] Confermata dal server, id=");
       Serial.println(static_cast<unsigned long long>(res.reservationId));
+      if (bookingPendingFromTable) {
+        Serial.println("[BOOK] Check-in automatico: prenotazione dal tavolo");
+      }
       printReservationsSummary();
     } else if (res.action == BOOK_ACTION_CANCEL) {
       int idx = findReservationIndexById(static_cast<int64_t>(bookingPendingReservationId));
@@ -626,7 +647,7 @@ void clearReservations() {
   reservationsCount = 0;
 }
 
-void addReservation(int64_t id, const String &nome, uint32_t oraInizio, uint32_t oraFine, bool localOnly) {
+void addReservation(int64_t id, const String &nome, uint32_t oraInizio, uint32_t oraFine, bool localOnly, bool checkedIn, bool bookedFromTable) {
   if (oraFine <= oraInizio) return;
 
   if (reservationsCount >= MAX_RESERVATIONS) {
@@ -642,6 +663,8 @@ void addReservation(int64_t id, const String &nome, uint32_t oraInizio, uint32_t
   reservations[reservationsCount].oraInizio = oraInizio;
   reservations[reservationsCount].oraFine = oraFine;
   reservations[reservationsCount].localOnly = localOnly;
+  reservations[reservationsCount].checkedIn = checkedIn;
+  reservations[reservationsCount].bookedFromTable = bookedFromTable;
   reservationsCount++;
 }
 
@@ -687,6 +710,11 @@ void parseReservationsFromJson(const String &json) {
   }
 
   JsonArray arr = doc["reservations"].as<JsonArray>();
+  Reservation oldReservations[MAX_RESERVATIONS];
+  int oldCount = reservationsCount;
+  for (int i = 0; i < oldCount; i++) {
+    oldReservations[i] = reservations[i];
+  }
   clearReservations();
 
   for (JsonObject r : arr) {
@@ -694,7 +722,16 @@ void parseReservationsFromJson(const String &json) {
     const char *nome = r["nome"] | "";
     uint32_t oraInizio = r["oraInizio"] | 0;
     uint32_t oraFine = r["oraFine"] | 0;
-    addReservation(rid, String(nome), oraInizio, oraFine, false);
+    bool checkedIn = false;
+    bool bookedFromTable = false;
+    for (int i = 0; i < oldCount; i++) {
+      if (oldReservations[i].id == rid) {
+        checkedIn = oldReservations[i].checkedIn;
+        bookedFromTable = oldReservations[i].bookedFromTable;
+        break;
+      }
+    }
+    addReservation(rid, String(nome), oraInizio, oraFine, false, checkedIn, bookedFromTable);
   }
 
   printReservationsSummary();
@@ -878,7 +915,7 @@ void renderView(bool force) {
   tft.drawFastHLine(0, 32, 240, TFT_DARKGREY);
 
   tft.setCursor(10, 10);
-  tft.setTextColor(TFT_CYAN);
+  tft.setTextColor(TFT_WHITE);
   tft.setTextSize(2);
   if (timeSynced) {
     struct tm ti;
@@ -1032,6 +1069,8 @@ void handleButtons() {
 
   if (out1Pressed) {
     bookingConfirmHoldStartMs = 0;
+    bookingMinusHoldStartMs = 0;
+    bookingPlusHoldStartMs = 0;
     if (presenceInviteVisible) {
       // Se si arriva da invito, tornare sempre alla schermata viola.
       statoAttuale = BOOK_WAIT_NFC;
@@ -1044,29 +1083,14 @@ void handleButtons() {
   }
 
   if (out2Pressed) {
-    if (sottomenu == 0) {
-      sceltaGiorno = (sceltaGiorno == 0) ? 1 : 0;
-    } else if (sottomenu == 1) {
-      sceltaOra--;
-      if (sceltaOra < 7) sceltaOra = 22;
-    }
-    tft.fillScreen(TFT_BLACK);
+    adjustBookingEndMinutes(-1);
   }
 
   if (out3Pressed) {
-    if (sottomenu == 0) {
-      sceltaGiorno = (sceltaGiorno == 0) ? 1 : 0;
-    } else if (sottomenu == 1) {
-      sceltaOra++;
-      if (sceltaOra > 22) sceltaOra = 7;
-    }
-    tft.fillScreen(TFT_BLACK);
+    adjustBookingEndMinutes(1);
   }
 
-  if (out4Pressed) {
-    sottomenu = (sottomenu + 1) % 2;
-    tft.fillScreen(TFT_BLACK);
-  }
+  processBookingTimeHold(touchIsPressed(btnOut2), touchIsPressed(btnOut3));
 
   bool out4Down = touchIsPressed(btnOut4);
   if (out4Down) {
@@ -1103,8 +1127,10 @@ void handleNfc() {
   if (isMaster) {
     currentBookingUidHex = uidToHex(uid, uidLen);
     statoAttuale = BOOK_DETAILS;
-    sottomenu = 0;
+    resetBookingEndSelection();
     bookingConfirmHoldStartMs = 0;
+    bookingMinusHoldStartMs = 0;
+    bookingPlusHoldStartMs = 0;
     tft.fillScreen(TFT_BLACK);
   } else if (statoAttuale == BOOK_WAIT_NFC) {
     if (presenceInviteVisible) {
@@ -1122,11 +1148,77 @@ void handleNfc() {
   }
 }
 
+void resetBookingEndSelection() {
+  struct tm ti;
+  if (!getLocalTime(&ti)) {
+    bookingEndMinutes = 10 * 60;
+    return;
+  }
+
+  int nowMinutes = ti.tm_hour * 60 + ti.tm_min;
+  int candidate = nowMinutes + 60;
+  int rounded = ((candidate + BOOK_TIME_STEP_MIN - 1) / BOOK_TIME_STEP_MIN) * BOOK_TIME_STEP_MIN;
+
+  const int maxMinutes = 23 * 60 + 45;
+  if (rounded > maxMinutes) rounded = maxMinutes;
+  if (rounded < 0) rounded = 0;
+
+  bookingEndMinutes = rounded;
+}
+
+void adjustBookingEndMinutes(int steps) {
+  if (steps == 0) return;
+
+  const int minMinutes = 0;
+  const int maxMinutes = 23 * 60 + 45;
+  int current = bookingEndMinutes;
+  int next = current + steps * BOOK_TIME_STEP_MIN;
+  if (next < minMinutes) next = minMinutes;
+  if (next > maxMinutes) next = maxMinutes;
+
+  if (next != current) {
+    bookingEndMinutes = next;
+    tft.fillScreen(TFT_BLACK);
+  }
+}
+
+void processBookingTimeHold(bool minusDown, bool plusDown) {
+  const unsigned long nowMs = millis();
+
+  if (minusDown) {
+    if (bookingMinusHoldStartMs == 0) {
+      bookingMinusHoldStartMs = nowMs;
+      bookingMinusLastRepeatMs = nowMs;
+    } else if ((nowMs - bookingMinusHoldStartMs) >= BOOK_REPEAT_INITIAL_DELAY_MS &&
+               (nowMs - bookingMinusLastRepeatMs) >= BOOK_REPEAT_INTERVAL_MS) {
+      adjustBookingEndMinutes(-1);
+      bookingMinusLastRepeatMs = nowMs;
+    }
+  } else {
+    bookingMinusHoldStartMs = 0;
+    bookingMinusLastRepeatMs = 0;
+  }
+
+  if (plusDown) {
+    if (bookingPlusHoldStartMs == 0) {
+      bookingPlusHoldStartMs = nowMs;
+      bookingPlusLastRepeatMs = nowMs;
+    } else if ((nowMs - bookingPlusHoldStartMs) >= BOOK_REPEAT_INITIAL_DELAY_MS &&
+               (nowMs - bookingPlusLastRepeatMs) >= BOOK_REPEAT_INTERVAL_MS) {
+      adjustBookingEndMinutes(1);
+      bookingPlusLastRepeatMs = nowMs;
+    }
+  } else {
+    bookingPlusHoldStartMs = 0;
+    bookingPlusLastRepeatMs = 0;
+  }
+}
+
 void drawBookingDetails() {
   if (statoAttuale != BOOK_DETAILS || bookingErrorVisible) return;
 
   tft.setCursor(10, 20);
-  tft.setTextColor(TFT_YELLOW);
+  tft.setTextColor(TFT_WHITE);
   tft.setTextSize(2);
   tft.println("CONFIGURA:");
 
@@ -1135,19 +1227,18 @@ void drawBookingDetails() {
   tft.setTextSize(1);
   tft.printf("UID: %s", currentBookingUidHex.length() == 0 ? "N/A" : currentBookingUidHex.c_str());
 
-  tft.setCursor(10, 85);
-  tft.setTextColor(sottomenu == 0 ? TFT_CYAN : TFT_WHITE);
-  tft.setTextSize(2);
-  tft.printf("D: %s", sceltaGiorno == 0 ? "OGGI" : "DOMANI");
+  int endHour = bookingEndMinutes / 60;
+  int endMin = bookingEndMinutes % 60;
 
-  tft.setCursor(10, 125);
-  tft.setTextColor(sottomenu == 1 ? TFT_CYAN : TFT_WHITE);
-  tft.printf("FINE: %02d:00", sceltaOra);
+  tft.setCursor(10, 95);
+  tft.setTextColor(TFT_CYAN);
+  tft.setTextSize(2);
+  tft.printf("FINE: %02d:%02d", endHour, endMin);
 
   tft.setCursor(10, 165);
   tft.setTextColor(TFT_LIGHTGREY);
   tft.setTextSize(1);
-  tft.println("A=Indietro B=Selezione campo");
+  tft.println("A=Indietro  -/+ = 15 min");
 
   tft.setCursor(10, 182);
   tft.setTextColor(TFT_GREEN);
@@ -1185,10 +1276,9 @@ void createManualBooking() {
     return;
   }
 
-  ti.tm_hour = sceltaOra;
-  ti.tm_min = 0;
+  ti.tm_hour = bookingEndMinutes / 60;
+  ti.tm_min = bookingEndMinutes % 60;
   ti.tm_sec = 0;
-  if (sceltaGiorno == 1) ti.tm_mday += 1;
 
   time_t tEnd = mktime(&ti);
   if (tEnd <= 0) return;
@@ -1205,7 +1295,8 @@ void createManualBooking() {
 
   if (!startCreateBookingRequest(currentBookingUidHex,
                                  startTs,
-                                 static_cast<uint32_t>(tEnd))) {
+                                 static_cast<uint32_t>(tEnd),
+                                 true)) {
     Serial.println("[BOOK] Invio prenotazione manuale fallito");
   }
 }
@@ -1231,7 +1322,7 @@ void createAutoBooking() {
 
   uint32_t startTs = static_cast<uint32_t>(nowTs + BOOK_START_OFFSET_S);
 
-  if (!startCreateBookingRequest("AUTO", startTs, static_cast<uint32_t>(nowTs + 3600))) {
+  if (!startCreateBookingRequest("AUTO", startTs, static_cast<uint32_t>(nowTs + 3600), true)) {
     Serial.println("[AUTO] Invio auto-book fallito");
   }
 }
@@ -1245,9 +1336,15 @@ void runPresenceAutomations() {
   int activeIdx = findActiveReservationIndex(nowTs);
 
   if (activeIdx >= 0) {
-    const Reservation &r = reservations[activeIdx];
+    Reservation &r = reservations[activeIdx];
     bool withinCancelWindow = (nowTs >= static_cast<time_t>(r.oraInizio) &&
                                nowTs <= static_cast<time_t>(r.oraInizio + ABSENCE_CANCEL_WINDOW_S));
+
+    if (checkInTrackingReservationId != r.id) {
+      checkInTrackingReservationId = r.id;
+      checkInPresenceStartMs = 0;
+      startAssenza = 0;
+    }
 
     if (presenceInviteVisible) {
       presenceInviteVisible = false;
@@ -1255,7 +1352,31 @@ void runPresenceAutomations() {
       renderView(true);
     }
 
-    if (!presenzaConfermata) {
+    if (!r.checkedIn && r.bookedFromTable) {
+      r.checkedIn = true;
+      Serial.println("[CHECKIN] Confermato automaticamente: prenotazione dal tavolo");
+    }
+
+    if (!r.checkedIn && withinCancelWindow) {
+      if (presenzaConfermata) {
+        if (checkInPresenceStartMs == 0) {
+          checkInPresenceStartMs = millis();
+        }
+
+        if (millis() - checkInPresenceStartMs >= CHECKIN_CONFIRM_OCCUPIED_MS) {
+          r.checkedIn = true;
+          startAssenza = 0;
+          checkInPresenceStartMs = 0;
+          Serial.println("[CHECKIN] Presenza confermata: prenotazione non cancellabile");
+        }
+      } else {
+        checkInPresenceStartMs = 0;
+      }
+    } else {
+      checkInPresenceStartMs = 0;
+    }
+
+    if (!r.checkedIn && !presenzaConfermata) {
       if (withinCancelWindow) {
         if (startAssenza == 0) startAssenza = millis();
 
@@ -1284,6 +1405,8 @@ void runPresenceAutomations() {
     startPresenza = 0;
     bloccoLeds = false;
   } else {
+    checkInTrackingReservationId = 0;
+    checkInPresenceStartMs = 0;
     if (presenzaConfermata) {
       if (startPresenza == 0) {
         startPresenza = millis();
@@ -1381,6 +1504,10 @@ void loop() {
       bookingErrorReturnToBooking = false;
       statoAttuale = BOOK_DETAILS;
       bookingConfirmHoldStartMs = 0;
+      bookingMinusHoldStartMs = 0;
+      bookingMinusLastRepeatMs = 0;
+      bookingPlusHoldStartMs = 0;
+      bookingPlusLastRepeatMs = 0;
       tft.fillScreen(TFT_BLACK);
     } else {
       renderView(true);
