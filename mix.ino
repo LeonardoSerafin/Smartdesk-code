@@ -638,8 +638,8 @@ void printCurrentClockIfDue() {
   }
 
   time_t nowEpoch = time(nullptr);
-  Serial.print("[CLOCK] Ora locale: ");
-  Serial.println(formatEpochLocal(static_cast<uint32_t>(nowEpoch)));
+  //Serial.print("[CLOCK] Ora locale: ");         // non ci serve un log continuo, ma è utile per debug e test di sincronizzazione tempo
+  //Serial.println(formatEpochLocal(static_cast<uint32_t>(nowEpoch)));
 }
 
 // -------------------- Prenotazioni --------------------
@@ -1037,7 +1037,8 @@ void handleButtons() {
   bool out4Pressed = touchPressed(btnOut4);
   bool anyPressed = out1Pressed || out2Pressed || out3Pressed || out4Pressed;
 
-  if (statoAttuale == VIEW) {
+  time_t nowTs = time(nullptr);
+  if (statoAttuale == VIEW && findActiveReservationIndex(nowTs) < 0) {
     if (anyPressed) {
       statoAttuale = BOOK_WAIT_NFC;
       
@@ -1117,14 +1118,15 @@ void handleButtons() {
 void handleNfc() {
   if (bookingPending || bookingErrorVisible) return;
   if (statoAttuale != BOOK_WAIT_NFC && statoAttuale != VIEW) return;
-
+  
   uint8_t uid[7] = {0};
   uint8_t uidLen = 0;
   if (!nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, 50)) return;
 
   bool isMaster = (uidLen > 0) && (uid[uidLen - 1] == MASTER_UID_SUFFIX);
 
-  if (isMaster) {
+  time_t nowTs = time(nullptr);
+  if (isMaster && findActiveReservationIndex(nowTs) < 0) {
     currentBookingUidHex = uidToHex(uid, uidLen);
     statoAttuale = BOOK_DETAILS;
     resetBookingEndSelection();
@@ -1358,6 +1360,18 @@ void runPresenceAutomations() {
     }
 
     if (!r.checkedIn && withinCancelWindow) {
+      if (startAssenza == 0) startAssenza = millis();
+      unsigned long trascorso = millis() - startAssenza;
+
+      if(trascorso < ABSENCE_CANCEL_TIMEOUT_MS) {
+          int rim = static_cast<int>((ABSENCE_CANCEL_TIMEOUT_MS - trascorso) / 1000);
+          tft.fillRect(0, 130, 240, 40, TFT_BLACK);
+          tft.setCursor(10, 140);
+          tft.setTextColor(TFT_YELLOW);
+          tft.setTextSize(1);
+          tft.printf("Assente: cancellazione in %ds", rim);
+      }
+
       if (presenzaConfermata) {
         if (checkInPresenceStartMs == 0) {
           checkInPresenceStartMs = millis();
@@ -1371,11 +1385,18 @@ void runPresenceAutomations() {
         }
       } else {
         checkInPresenceStartMs = 0;
-      }
+        if(trascorso >= ABSENCE_CANCEL_TIMEOUT_MS) {
+          autoCancelActiveReservation();
+          startAssenza = 0;
+          renderView(true);
+          Serial.println("[AUTO] Prenotazione cancellata per assenza");
+        }
+      } 
+
     } else {
       checkInPresenceStartMs = 0;
     }
-
+    /*
     if (!r.checkedIn && !presenzaConfermata) {
       if (withinCancelWindow) {
         if (startAssenza == 0) startAssenza = millis();
@@ -1401,7 +1422,7 @@ void runPresenceAutomations() {
       startAssenza = 0;
       renderView(true);
     }
-
+    */
     startPresenza = 0;
     bloccoLeds = false;
   } else {
