@@ -650,6 +650,20 @@ void clearReservations() {
 void addReservation(int64_t id, const String &nome, uint32_t oraInizio, uint32_t oraFine, bool localOnly, bool checkedIn, bool bookedFromTable) {
   if (oraFine <= oraInizio) return;
 
+  // Se l'ID esiste già, lo aggiorniamo. Questo previene doppioni
+  // causati da JSON che arrivano prima delle conferme.
+  int existingIdx = findReservationIndexById(id);
+  if (existingIdx >= 0) {
+    reservations[existingIdx].nome = nome;
+    reservations[existingIdx].oraInizio = oraInizio;
+    reservations[existingIdx].oraFine = oraFine;
+    reservations[existingIdx].localOnly = localOnly;
+    // Manteniamo le variabili "vere" se lo erano già o se la nuova chiamata le imposta a true
+    if (checkedIn) reservations[existingIdx].checkedIn = true;
+    if (bookedFromTable) reservations[existingIdx].bookedFromTable = true;
+    return;
+  }
+
   if (reservationsCount >= MAX_RESERVATIONS) {
     // Mantieni le prenotazioni piu recenti.
     for (int i = 1; i < reservationsCount; i++) {
@@ -1377,17 +1391,14 @@ void runPresenceAutomations() {
     }
 
     if (!r.checkedIn && withinCancelWindow) {
-      if (startAssenza == 0) startAssenza = millis();
-      unsigned long trascorso = millis() - startAssenza;
+      int secondiRimanenti = static_cast<int>((r.oraInizio + ABSENCE_CANCEL_WINDOW_S) - nowTs);
+      if (secondiRimanenti < 0) secondiRimanenti = 0;
 
-      if(trascorso < ABSENCE_CANCEL_TIMEOUT_MS) {
-          int rim = static_cast<int>((ABSENCE_CANCEL_TIMEOUT_MS - trascorso) / 1000);
-          tft.fillRect(0, 230, 240, 40, TFT_BLACK);
-          tft.setCursor(10, 240);
-          tft.setTextColor(TFT_YELLOW);
-          tft.setTextSize(1);
-          tft.printf("Assente: cancellazione in %ds", rim);
-      }
+      tft.fillRect(0, 230, 240, 40, TFT_BLACK);
+      tft.setCursor(10, 240);
+      tft.setTextColor(TFT_YELLOW);
+      tft.setTextSize(1);
+      tft.printf("Assente: cancellazione in %ds", secondiRimanenti);
 
       if (presenzaConfermata) {
         if (checkInPresenceStartMs == 0) {
