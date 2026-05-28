@@ -419,17 +419,17 @@ void showBookingError(const String &msg) {
     tft.fillScreen(TFT_RED);
     tft.setTextColor(TFT_WHITE);
     tft.setTextSize(2);
-    tft.setCursor(10, 35);
+    tft.setCursor(10, 80);
     tft.println("CONFLITTO");
-    tft.setCursor(10, 65);
+    tft.setCursor(10, 110);
     tft.println("PRENOTAZIONE");
 
     tft.setTextSize(1);
-    tft.setCursor(10, 105);
+    tft.setCursor(10, 170);
     tft.println("Fascia oraria gia occupata.");
-    tft.setCursor(10, 125);
+    tft.setCursor(10, 190);
     tft.println("Seleziona una nuova ora fine.");
-    tft.setCursor(10, 155);
+    tft.setCursor(10, 230);
     tft.println("Ritorno automatico...");
     return;
   }
@@ -445,17 +445,17 @@ void showInvalidEndTimeError() {
   tft.fillScreen(TFT_YELLOW);
   tft.setTextColor(TFT_BLACK);
   tft.setTextSize(2);
-  tft.setCursor(10, 35);
+  tft.setCursor(10, 80);
   tft.println("ORARIO");
-  tft.setCursor(10, 65);
+  tft.setCursor(10, 110);
   tft.println("NON VALIDO");
 
   tft.setTextSize(1);
-  tft.setCursor(10, 105);
+  tft.setCursor(10, 170);
   tft.println("L'ora di fine deve essere");
-  tft.setCursor(10, 125);
+  tft.setCursor(10, 190);
   tft.println("successiva all'istante attuale.");
-  tft.setCursor(10, 155);
+  tft.setCursor(10, 230);
   tft.println("Ritorno a prenotazione...");
 }
 
@@ -883,23 +883,23 @@ void displayTimeRemaining(time_t startTs, time_t endTs, time_t nowTs) {
   strip.show();
 
   int minRimanenti = static_cast<int>((endTs - nowTs) / 60);
-  tft.fillRect(10, 100, 220, 20, TFT_BLACK);
-  tft.setCursor(10, 105);
+  tft.fillRect(0, 205, 240, 30, TFT_BLACK);
+  tft.setCursor(10, 210);
   tft.setTextColor(TFT_LIGHTGREY);
-  tft.setTextSize(1);
-  if (minRimanenti > 0) tft.printf("Scadenza tra: %d min", minRimanenti);
+  tft.setTextSize(2);
+  if (minRimanenti > 0) tft.printf("Scadenza: %d min", minRimanenti);
 }
 
 void writeOnLcd(const String &title, const String &sub, uint16_t color) {
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(color);
   tft.setTextSize(2);
-  tft.setCursor(10, 60);
+  tft.setCursor(10, 120);
   tft.println(title);
 
   tft.setTextColor(TFT_WHITE);
   tft.setTextSize(1);
-  tft.setCursor(10, 90);
+  tft.setCursor(10, 160);
   tft.println(sub);
 }
 
@@ -912,51 +912,56 @@ void renderView(bool force) {
   int activeIdx = findActiveReservationIndex(nowTs);
 
   tft.fillScreen(TFT_BLACK);
-  tft.drawFastHLine(0, 32, 240, TFT_DARKGREY);
 
-  tft.setCursor(10, 10);
+  // Orologio grande al centro
   tft.setTextColor(TFT_WHITE);
-  tft.setTextSize(2);
+  tft.setTextSize(4);
   if (timeSynced) {
     struct tm ti;
     localtime_r(&nowTs, &ti);
     char b[8];
     strftime(b, sizeof(b), "%H:%M", &ti);
+    // 5 caratteri in TextSize(4) occupano circa 5*24=120px 
+    tft.setCursor((240 - 120) / 2, 25);
     tft.println(b);
   } else {
+    tft.setCursor((240 - 120) / 2, 25);
     tft.println("--:--");
   }
 
-  tft.setCursor(130, 10);
-  tft.setTextSize(1);
-  tft.setTextColor(TFT_LIGHTGREY);
-  tft.printf("Radar: %s", presenzaConfermata ? "ON" : "OFF");
+  tft.drawFastHLine(0, 75, 240, TFT_DARKGREY);
 
-  tft.setCursor(10, 50);
+  tft.setCursor(10, 95);
   if (activeIdx >= 0) {
     const Reservation &r = reservations[activeIdx];
     tft.setTextColor(TFT_RED);
     tft.setTextSize(2);
-    tft.println("TAVOLO 1: OCCUPATO");
+    tft.println("TAVOLO 1:\n  OCCUPATO");
 
-    tft.setCursor(10, 80);
+    tft.setCursor(10, 145);
     tft.setTextColor(TFT_WHITE);
-    tft.setTextSize(1);
-    tft.printf("Utente: %s", r.nome.c_str());
+    tft.setTextSize(2);
+    tft.printf("Utente:\n %s", r.nome.c_str());
 
     displayTimeRemaining(static_cast<time_t>(r.oraInizio), static_cast<time_t>(r.oraFine), nowTs);
   } else {
     tft.setTextColor(TFT_GREEN);
     tft.setTextSize(2);
-    tft.println("TAVOLO 1: LIBERO");
+    tft.println("TAVOLO 1:\n  LIBERO");
 
-    tft.setCursor(10, 80);
+    tft.setCursor(10, 145);
     tft.setTextColor(TFT_WHITE);
     tft.setTextSize(1);
     tft.println("Pronto per prenotazione");
 
     if (!bloccoLeds) setAllLeds(strip.Color(0, 50, 0));
   }
+
+  // Radar in fondo come debug
+  tft.setCursor(10, 300);
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_DARKGREY);
+  tft.printf("Radar: %s", presenzaConfermata ? "ON" : "OFF");
 }
 
 void drawPresenceProgressBlocks(uint32_t elapsedMs) {
@@ -965,9 +970,9 @@ void drawPresenceProgressBlocks(uint32_t elapsedMs) {
   if (filled > PRESENCE_PROGRESS_BLOCKS) filled = PRESENCE_PROGRESS_BLOCKS;
 
   const int x = 10;
-  const int y = 170;
+  const int y = 265;
   const int w = 220;
-  const int h = 14;
+  const int h = 18;
   const int spacing = 2;
   const int blockW = (w - (PRESENCE_PROGRESS_BLOCKS - 1) * spacing) / PRESENCE_PROGRESS_BLOCKS;
 
@@ -987,15 +992,15 @@ void showPresenceInviteScreen() {
   tft.fillScreen(TFT_MAGENTA);
   tft.setTextColor(TFT_WHITE);
   tft.setTextSize(2);
-  tft.setCursor(10, 35);
+  tft.setCursor(10, 80);
   tft.println("TAVOLO LIBERO");
-  tft.setCursor(10, 65);
+  tft.setCursor(10, 110);
   tft.println("PRENOTATI");
 
   tft.setTextSize(1);
-  tft.setCursor(10, 105);
+  tft.setCursor(10, 170);
   tft.println("Se ti sei seduto, effettua");
-  tft.setCursor(10, 123);
+  tft.setCursor(10, 190);
   tft.println("la prenotazione con tessera.");
 }
 
@@ -1047,8 +1052,8 @@ void handleButtons() {
       tft.setTextSize(2);
       tft.setCursor(10, 100);
       tft.println("PRENOTAZIONE");
-      tft.setCursor(10, 130);
-      tft.println("Avvicina la tessera...");
+      tft.setCursor(10, 140);
+      tft.println("Avvicina tessera...");
     }
     return;
   }
@@ -1219,12 +1224,12 @@ void processBookingTimeHold(bool minusDown, bool plusDown) {
 void drawBookingDetails() {
   if (statoAttuale != BOOK_DETAILS || bookingErrorVisible) return;
 
-  tft.setCursor(10, 20);
+  tft.setCursor(10, 40);
   tft.setTextColor(TFT_WHITE);
   tft.setTextSize(2);
   tft.println("CONFIGURA:");
 
-  tft.setCursor(10, 50);
+  tft.setCursor(10, 80);
   tft.setTextColor(TFT_WHITE);
   tft.setTextSize(1);
   tft.printf("UID: %s", currentBookingUidHex.length() == 0 ? "N/A" : currentBookingUidHex.c_str());
@@ -1232,17 +1237,17 @@ void drawBookingDetails() {
   int endHour = bookingEndMinutes / 60;
   int endMin = bookingEndMinutes % 60;
 
-  tft.setCursor(10, 95);
+  tft.setCursor(10, 130);
   tft.setTextColor(TFT_CYAN);
-  tft.setTextSize(2);
+  tft.setTextSize(3);
   tft.printf("FINE: %02d:%02d", endHour, endMin);
 
-  tft.setCursor(10, 165);
+  tft.setCursor(10, 220);
   tft.setTextColor(TFT_LIGHTGREY);
   tft.setTextSize(1);
   tft.println("A=Indietro  -/+ = 15 min");
 
-  tft.setCursor(10, 182);
+  tft.setCursor(10, 240);
   tft.setTextColor(TFT_GREEN);
   tft.println("Tieni premuto B per confermare");
 
@@ -1251,9 +1256,9 @@ void drawBookingDetails() {
 
 void drawBookingConfirmProgress(uint32_t holdMs) {
   const int x = 10;
-  const int y = 205;
+  const int y = 270;
   const int w = 220;
-  const int h = 12;
+  const int h = 18;
 
   if (holdMs > LONG_PRESS_CONFIRM_MS) holdMs = LONG_PRESS_CONFIRM_MS;
   int fillW = static_cast<int>((static_cast<float>(holdMs) / LONG_PRESS_CONFIRM_MS) * w);
@@ -1365,8 +1370,8 @@ void runPresenceAutomations() {
 
       if(trascorso < ABSENCE_CANCEL_TIMEOUT_MS) {
           int rim = static_cast<int>((ABSENCE_CANCEL_TIMEOUT_MS - trascorso) / 1000);
-          tft.fillRect(0, 130, 240, 40, TFT_BLACK);
-          tft.setCursor(10, 140);
+          tft.fillRect(0, 230, 240, 40, TFT_BLACK);
+          tft.setCursor(10, 240);
           tft.setTextColor(TFT_YELLOW);
           tft.setTextSize(1);
           tft.printf("Assente: cancellazione in %ds", rim);
@@ -1436,8 +1441,8 @@ void runPresenceAutomations() {
       unsigned long trascorso = millis() - startPresenza;
       if (trascorso < PRESENCE_INVITE_DELAY_MS) {
         //int rim = static_cast<int>((PRESENCE_INVITE_DELAY_MS - trascorso) / 1000);
-        tft.fillRect(0, 130, 240, 35, TFT_BLACK);
-        tft.setCursor(10, 140);
+        tft.fillRect(0, 240, 240, 35, TFT_BLACK);
+        tft.setCursor(10, 250);
         tft.setTextColor(TFT_MAGENTA);
         tft.setTextSize(1);
         //tft.printf("Prenota il tavolo tra: %ds", rim);
@@ -1476,7 +1481,7 @@ void setup() {
   strip.show();
 
   tft.init();
-  tft.setRotation(1);
+  tft.setRotation(0);
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, HIGH);
 
