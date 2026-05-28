@@ -922,23 +922,35 @@ void renderView(bool force) {
     char b[8];
     strftime(b, sizeof(b), "%H:%M", &ti);
     // 5 caratteri in TextSize(4) occupano circa 5*24=120px 
-    tft.setCursor((240 - 120) / 2, 25);
+    tft.setCursor((240 - 120) / 2, 15);
     tft.println(b);
   } else {
-    tft.setCursor((240 - 120) / 2, 25);
+    tft.setCursor((240 - 120) / 2, 15);
     tft.println("--:--");
   }
 
-  tft.drawFastHLine(0, 75, 240, TFT_DARKGREY);
+  // 1a linea separatrice
+  tft.drawFastHLine(0, 60, 240, TFT_DARKGREY);
 
-  tft.setCursor(10, 95);
+  // Numero tavolo centrato
+  tft.setTextColor(TFT_CYAN);
+  tft.setTextSize(2);
+  String tableStr = String("TAVOLO ") + String(TABLE_ID);
+  int tableStrW = tableStr.length() * 12; // TextSize(2) -> 12px width per char
+  tft.setCursor((240 - tableStrW) / 2, 72);
+  tft.println(tableStr);
+
+  // 2a linea separatrice
+  tft.drawFastHLine(0, 95, 240, TFT_DARKGREY);
+
+  tft.setCursor(10, 115);
   if (activeIdx >= 0) {
     const Reservation &r = reservations[activeIdx];
     tft.setTextColor(TFT_RED);
     tft.setTextSize(2);
-    tft.println("TAVOLO 1:\n  OCCUPATO");
+    tft.println("STATO: OCCUPATO");
 
-    tft.setCursor(10, 145);
+    tft.setCursor(10, 150);
     tft.setTextColor(TFT_WHITE);
     tft.setTextSize(2);
     tft.printf("Utente:\n %s", r.nome.c_str());
@@ -947,9 +959,9 @@ void renderView(bool force) {
   } else {
     tft.setTextColor(TFT_GREEN);
     tft.setTextSize(2);
-    tft.println("TAVOLO 1:\n  LIBERO");
+    tft.println("STATO: LIBERO");
 
-    tft.setCursor(10, 145);
+    tft.setCursor(10, 150);
     tft.setTextColor(TFT_WHITE);
     tft.setTextSize(1);
     tft.println("Pronto per prenotazione");
