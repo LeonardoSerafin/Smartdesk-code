@@ -162,7 +162,9 @@ void showBookingError(const String &msg) {
 void showInvalidCardError() {
   bookingErrorVisible = true;
   bookingErrorUntilMs = millis() + BOOK_ERROR_DISPLAY_MS;
-  bookingErrorReturnToBooking = false;
+  // If we are showing the presence-invite (purple) screen, request to return
+  // to that state after the error display; otherwise don't return to booking flow.
+  bookingErrorReturnToBooking = presenceInviteVisible;
 
   tft.fillScreen(TFT_RED);
   tft.setTextColor(TFT_WHITE);

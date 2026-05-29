@@ -65,13 +65,18 @@ void loop() {
     bookingErrorVisible = false;
     if (bookingErrorReturnToBooking) {
       bookingErrorReturnToBooking = false;
-      statoAttuale = BOOK_DETAILS;
-      bookingConfirmHoldStartMs = 0;
-      bookingMinusHoldStartMs = 0;
-      bookingMinusLastRepeatMs = 0;
-      bookingPlusHoldStartMs = 0;
-      bookingPlusLastRepeatMs = 0;
-      tft.fillScreen(TFT_BLACK);
+      // If the presence-invite (purple) screen was visible, restore it.
+      if (presenceInviteVisible) {
+        showPresenceInviteScreen();
+      } else {
+        statoAttuale = BOOK_DETAILS;
+        bookingConfirmHoldStartMs = 0;
+        bookingMinusHoldStartMs = 0;
+        bookingMinusLastRepeatMs = 0;
+        bookingPlusHoldStartMs = 0;
+        bookingPlusLastRepeatMs = 0;
+        tft.fillScreen(TFT_BLACK);
+      }
     } else {
       renderView(true);
     }
