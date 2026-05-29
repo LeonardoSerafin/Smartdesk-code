@@ -43,6 +43,7 @@ String bookingReasonToText(uint8_t reason);
 String uidToHex(const uint8_t *uid, uint8_t uidLen);
 
 int findActiveReservationIndex(time_t nowTs);
+int findNextFutureReservationIndex(time_t nowTs);
 int findReservationIndexById(int64_t id);
 void clearReservations();
 void addReservation(int64_t id, const String &nome, uint32_t oraInizio, uint32_t oraFine, bool localOnly, bool checkedIn, bool bookedFromTable);
