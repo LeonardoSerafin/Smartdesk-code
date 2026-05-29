@@ -834,7 +834,9 @@ bool touchIsPressed(TouchButtonState &btn) {
 }
 
 void handleButtons() {
-  if (bookingPending || bookingErrorVisible) return;
+  // If booking flow is pending, an error is visible, or we are showing the
+  // presence-invite (purple) screen, ignore all touch input.
+  if (bookingPending || bookingErrorVisible || presenceInviteVisible) return;
 
   bool out1Pressed = touchPressed(btnOut1);
   bool out2Pressed = touchPressed(btnOut2);

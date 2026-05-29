@@ -36,7 +36,7 @@ static const uint32_t CLOCK_PRINT_INTERVAL_MS = 5000;
 
 // Radar timing
 #define DELAY_OCCUPATO 3000
-#define TIMEOUT_LIBERO 8000
+#define TIMEOUT_LIBERO 3000
 
 // Automazioni tavolo
 static const uint32_t TIMEOUT_CANCELLAZIONE = 30000;
