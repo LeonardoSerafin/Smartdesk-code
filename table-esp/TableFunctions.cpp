@@ -1200,6 +1200,7 @@ void runPresenceAutomations() {
       if (startPresenza == 0) {
         startPresenza = millis();
       }
+      absenceInPurpleScreenStartMs = 0;
 
       unsigned long trascorso = millis() - startPresenza;
       if (trascorso < PRESENCE_INVITE_DELAY_MS) {
@@ -1217,10 +1218,23 @@ void runPresenceAutomations() {
         }
       }
     } else if (startPresenza != 0) {
-      startPresenza = 0;
-      presenceInviteVisible = false;
-      bloccoLeds = false;
-      renderView(true);
+      if (presenceInviteVisible) {
+        if (absenceInPurpleScreenStartMs == 0) {
+          absenceInPurpleScreenStartMs = millis();
+        }
+        if (millis() - absenceInPurpleScreenStartMs >= 60000UL) {
+          startPresenza = 0;
+          absenceInPurpleScreenStartMs = 0;
+          presenceInviteVisible = false;
+          bloccoLeds = false;
+          renderView(true);
+        }
+      } else {
+        startPresenza = 0;
+        presenceInviteVisible = false;
+        bloccoLeds = false;
+        renderView(true);
+      }
     }
 
     startAssenza = 0;

@@ -92,6 +92,7 @@ extern int bookingEndMinutes;
 
 extern bool bloccoLeds;
 extern unsigned long startAssenza;
+extern unsigned long absenceInPurpleScreenStartMs;
 extern unsigned long checkInPresenceStartMs;
 extern int64_t checkInTrackingReservationId;
 extern unsigned long startPresenza;

@@ -48,6 +48,7 @@ String rigaRadar;
 int bookingEndMinutes = 10 * 60; // minuti da mezzanotte, step 15
 bool bloccoLeds = false;
 unsigned long startAssenza = 0;
+unsigned long absenceInPurpleScreenStartMs = 0;
 unsigned long checkInPresenceStartMs = 0;
 int64_t checkInTrackingReservationId = 0;
 unsigned long startPresenza = 0;
