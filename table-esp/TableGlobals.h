@@ -18,11 +18,11 @@
 
 // -------------------- Stato sistema --------------------
 enum StatoSistema { VIEW, BOOK_WAIT_NFC, BOOK_DETAILS };
-StatoSistema statoAttuale = VIEW;
+extern StatoSistema statoAttuale;
 
-TFT_eSPI tft = TFT_eSPI();
-Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
-Adafruit_PN532 nfc(SDA_NFC, SCL_NFC);
+extern TFT_eSPI tft;
+extern Adafruit_NeoPixel strip;
+extern Adafruit_PN532 nfc;
 
 // -------------------- Stato prenotazioni --------------------
 struct Reservation {
@@ -71,7 +71,7 @@ extern bool bookingPendingFromTable;
 extern uint32_t nextBookingMsgId;
 
 extern bool bookingErrorVisible;
-extern unsigned long;
+extern unsigned long bookingErrorUntilMs;
 extern bool bookingErrorReturnToBooking;
 extern String currentBookingUidHex;
 
@@ -83,19 +83,19 @@ extern portMUX_TYPE bookingResultMux;
 extern bool presenzaConfermata;
 extern bool inAttesaConferma;
 extern bool ultimoStatoOn;
-extern unsigned long;
-extern unsigned long;
+extern unsigned long ultimoOn;
+extern unsigned long primaPresenza;
 extern String rigaRadar;
 
 // -------------------- Stato UI --------------------
 extern int bookingEndMinutes;
 
 extern bool bloccoLeds;
-extern unsigned long;
-extern unsigned long;
+extern unsigned long startAssenza;
+extern unsigned long checkInPresenceStartMs;
 extern int64_t checkInTrackingReservationId;
-extern unsigned long;
-extern unsigned long;
+extern unsigned long startPresenza;
+extern unsigned long lastDisplayRefreshMs;
 extern bool presenceInviteVisible;
 
 // -------------------- Stato touch --------------------
@@ -112,9 +112,9 @@ extern TouchButtonState btnOut2;
 extern TouchButtonState btnOut3;
 extern TouchButtonState btnOut4;
 
-extern unsigned long;
-extern unsigned long;
-extern unsigned long;
-extern unsigned long;
-extern unsigned long;
+extern unsigned long bookingConfirmHoldStartMs;
+extern unsigned long bookingMinusHoldStartMs;
+extern unsigned long bookingMinusLastRepeatMs;
+extern unsigned long bookingPlusHoldStartMs;
+extern unsigned long bookingPlusLastRepeatMs;
 

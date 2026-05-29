@@ -159,6 +159,24 @@ void showBookingError(const String &msg) {
   writeOnLcd("PRENOTAZIONE", msg, TFT_RED);
 }
 
+void showInvalidCardError() {
+  bookingErrorVisible = true;
+  bookingErrorUntilMs = millis() + BOOK_ERROR_DISPLAY_MS;
+  bookingErrorReturnToBooking = false;
+
+  tft.fillScreen(TFT_RED);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(10, 80);
+  tft.println("TESSERA");
+  tft.setCursor(10, 110);
+  tft.println("NON VALIDA");
+
+  tft.setTextSize(1);
+  tft.setCursor(10, 190);
+  tft.println("Usa una tessera autorizzata.");
+}
+
 void showInvalidEndTimeError() {
   bookingErrorVisible = true;
   bookingErrorUntilMs = millis() + BOOK_ERROR_DISPLAY_MS;
@@ -887,18 +905,18 @@ void handleNfc() {
     bookingMinusHoldStartMs = 0;
     bookingPlusHoldStartMs = 0;
     tft.fillScreen(TFT_BLACK);
-  } else if (statoAttuale == BOOK_WAIT_NFC) {
-    if (presenceInviteVisible) {
-      // In modalita invito ignoriamo tessere non valide per evitare escape.
-      writeOnLcd("PRENOTAZIONE", "Tessera non valida", TFT_RED);
-      delay(700);
-      showPresenceInviteScreen();
-    } else {
-      autoCancelActiveReservation();
-      statoAttuale = VIEW;
-      if (!bookingPending) {
-        renderView(true);
+  } else {
+    showInvalidCardError();
+    if (statoAttuale == BOOK_WAIT_NFC) {
+      if (presenceInviteVisible) {
+        // Disabilitiamo il flag temporaneamente.
+        // Al termine dell'errore (quando si torna a VIEW), 
+        // runPresenceAutomations rilevera' che deve ri-mostrare l'invito.
+        presenceInviteVisible = false;
+      } else {
+        autoCancelActiveReservation();
       }
+      statoAttuale = VIEW;
     }
   }
 }

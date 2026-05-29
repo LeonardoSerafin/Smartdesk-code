@@ -37,6 +37,7 @@ void renderView(bool force = false);
 void drawPresenceProgressBlocks(uint32_t elapsedMs);
 void showPresenceInviteScreen();
 void showBookingError(const String &msg);
+void showInvalidCardError();
 void showInvalidEndTimeError();
 String bookingReasonToText(uint8_t reason);
 String uidToHex(const uint8_t *uid, uint8_t uidLen);

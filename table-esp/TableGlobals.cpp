@@ -1,5 +1,11 @@
 #include "TableGlobals.h"
 
+StatoSistema statoAttuale = VIEW;
+TFT_eSPI tft = TFT_eSPI();
+Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+Adafruit_PN532 nfc(SDA_NFC, SCL_NFC);
+
+
 Reservation reservations[MAX_RESERVATIONS];
 int reservationsCount = 0;
 int64_t nextLocalId = -1;
