@@ -765,17 +765,38 @@ void renderView(bool force) {
   }
 
   if (activeIdx < 0) {
-    tft.setCursor(10, 240);
-    tft.setTextSize(1);
+    const int boxX = 8;
+    const int boxY = 180;
+    const int boxW = 224;
+    const int boxH = 55;
+
+    tft.fillRect(boxX, boxY, boxW, boxH, TFT_BLACK);
+    tft.drawRect(boxX, boxY, boxW, boxH, TFT_DARKGREY);
+
     if (nextFutureIdx >= 0) {
       const Reservation &nextRes = reservations[nextFutureIdx];
-      tft.setTextColor(TFT_LIGHTGREY);
-      tft.println("Prossima prenotazione:");
-      tft.setTextColor(TFT_WHITE);
       String nextTime = formatEpochLocal(nextRes.oraInizio).substring(11, 16);
-      tft.printf("%s - %s", nextTime.c_str(), nextRes.nome.c_str());
+      String nextName = nextRes.nome;
+      if (nextName.length() > 30) nextName = nextName.substring(0, 27) + "...";
+
+      tft.setCursor(boxX + 7, boxY + 6);
+      tft.setTextColor(TFT_CYAN);
+      tft.setTextSize(1);
+      tft.println("PROSSIMA PRENOTAZIONE");
+
+      tft.setCursor(boxX + 7, boxY + 21);
+      tft.setTextColor(TFT_WHITE);
+      tft.setTextSize(2);
+      tft.printf("Ore %s", nextTime.c_str());
+
+      tft.setCursor(boxX + 7, boxY + 42);
+      tft.setTextColor(TFT_LIGHTGREY);
+      tft.setTextSize(1);
+      tft.print(nextName);
     } else {
+      tft.setCursor(boxX + 7, boxY + 20);
       tft.setTextColor(TFT_DARKGREY);
+      tft.setTextSize(1);
       tft.println("Nessuna prenotazione futura");
     }
   }
