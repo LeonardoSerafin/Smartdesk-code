@@ -23,9 +23,11 @@ void setup() {
   digitalWrite(TFT_BL, HIGH);
 
   Wire.begin(SDA_NFC, SCL_NFC);
+  pinMode(PN532_IRQ, INPUT_PULLUP);
   nfc.begin();
   if (nfc.getFirmwareVersion()) {
     nfc.SAMConfig();
+    setupNfcInterrupt();
     Serial.println("[NFC] pronto");
   } else {
     Serial.println("[NFC] non rilevato");

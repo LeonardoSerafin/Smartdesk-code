@@ -1,5 +1,26 @@
 #include "TableFunctions.h"
 
+static volatile bool nfcIrqPending = false;
+static bool nfcInterruptModeEnabled = false;
+static bool nfcDetectionArmed = false;
+
+static void IRAM_ATTR onNfcIrq() {
+  nfcIrqPending = true;
+}
+
+static void armNfcDetection() {
+  detachInterrupt(digitalPinToInterrupt(PN532_IRQ));
+  nfcIrqPending = false;
+  // In questo flow Adafruit, false significa anche "nessuna tessera ancora".
+  bool cardAlreadyPresent = nfc.startPassiveTargetIDDetection(PN532_MIFARE_ISO14443A);
+  nfcDetectionArmed = true;
+
+  attachInterrupt(digitalPinToInterrupt(PN532_IRQ), onNfcIrq, FALLING);
+  if (cardAlreadyPresent || digitalRead(PN532_IRQ) == LOW) {
+    nfcIrqPending = true;
+  }
+}
+
 // -------------------- ESP-NOW --------------------
 bool ensurePeer(const uint8_t *mac) {
   if (esp_now_is_peer_exist(mac)) return true;
@@ -922,13 +943,39 @@ void handleButtons() {
   }
 }
 
+void setupNfcInterrupt() {
+  pinMode(PN532_IRQ, INPUT_PULLUP);
+  nfcInterruptModeEnabled = true;
+  nfcDetectionArmed = false;
+  nfcIrqPending = false;
+  armNfcDetection();
+}
+
 void handleNfc() {
-  if (bookingPending || bookingErrorVisible) return;
-  if (statoAttuale != BOOK_WAIT_NFC && statoAttuale != VIEW) return;
-  
+  if (!nfcInterruptModeEnabled) return;
+
+  if (!nfcDetectionArmed) {
+    armNfcDetection();
+    return;
+  }
+
+  if (!nfcIrqPending && digitalRead(PN532_IRQ) == LOW) {
+    nfcIrqPending = true;
+  }
+
+  if (!nfcIrqPending) return;
+
+  nfcIrqPending = false;
+  nfcDetectionArmed = false;
+
   uint8_t uid[7] = {0};
   uint8_t uidLen = 0;
-  if (!nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, 50)) return;
+  bool cardRead = nfc.readDetectedPassiveTargetID(uid, &uidLen);
+  armNfcDetection();
+
+  if (!cardRead) return;
+  if (bookingPending || bookingErrorVisible) return;
+  if (statoAttuale != BOOK_WAIT_NFC && statoAttuale != VIEW) return;
 
   bool isMaster = (uidLen > 0) && (uid[uidLen - 1] == MASTER_UID_SUFFIX);
 
