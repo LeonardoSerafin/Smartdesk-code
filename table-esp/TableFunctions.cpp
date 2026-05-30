@@ -21,6 +21,42 @@ static void armNfcDetection() {
   }
 }
 
+static void drawNextReservationBox(int nextFutureIdx, int boxY) {
+  const int boxX = 8;
+  const int boxW = 224;
+  const int boxH = 55;
+
+  tft.fillRect(boxX, boxY, boxW, boxH, TFT_BLACK);
+  tft.drawRect(boxX, boxY, boxW, boxH, TFT_DARKGREY);
+
+  if (nextFutureIdx >= 0) {
+    const Reservation &nextRes = reservations[nextFutureIdx];
+    String nextTime = formatEpochLocal(nextRes.oraInizio).substring(11, 16);
+    String nextName = nextRes.nome;
+    if (nextName.length() > 30) nextName = nextName.substring(0, 27) + "...";
+
+    tft.setCursor(boxX + 7, boxY + 6);
+    tft.setTextColor(TFT_CYAN);
+    tft.setTextSize(1);
+    tft.println("PROSSIMA PRENOTAZIONE");
+
+    tft.setCursor(boxX + 7, boxY + 21);
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    tft.printf("Ore %s", nextTime.c_str());
+
+    tft.setCursor(boxX + 7, boxY + 42);
+    tft.setTextColor(TFT_LIGHTGREY);
+    tft.setTextSize(1);
+    tft.print(nextName);
+  } else {
+    tft.setCursor(boxX + 7, boxY + 20);
+    tft.setTextColor(TFT_DARKGREY);
+    tft.setTextSize(1);
+    tft.println("Nessuna prenotazione futura");
+  }
+}
+
 // -------------------- ESP-NOW --------------------
 bool ensurePeer(const uint8_t *mac) {
   if (esp_now_is_peer_exist(mac)) return true;
@@ -765,40 +801,7 @@ void renderView(bool force) {
   }
 
   if (activeIdx < 0) {
-    const int boxX = 8;
-    const int boxY = 180;
-    const int boxW = 224;
-    const int boxH = 55;
-
-    tft.fillRect(boxX, boxY, boxW, boxH, TFT_BLACK);
-    tft.drawRect(boxX, boxY, boxW, boxH, TFT_DARKGREY);
-
-    if (nextFutureIdx >= 0) {
-      const Reservation &nextRes = reservations[nextFutureIdx];
-      String nextTime = formatEpochLocal(nextRes.oraInizio).substring(11, 16);
-      String nextName = nextRes.nome;
-      if (nextName.length() > 30) nextName = nextName.substring(0, 27) + "...";
-
-      tft.setCursor(boxX + 7, boxY + 6);
-      tft.setTextColor(TFT_CYAN);
-      tft.setTextSize(1);
-      tft.println("PROSSIMA PRENOTAZIONE");
-
-      tft.setCursor(boxX + 7, boxY + 21);
-      tft.setTextColor(TFT_WHITE);
-      tft.setTextSize(2);
-      tft.printf("Ore %s", nextTime.c_str());
-
-      tft.setCursor(boxX + 7, boxY + 42);
-      tft.setTextColor(TFT_LIGHTGREY);
-      tft.setTextSize(1);
-      tft.print(nextName);
-    } else {
-      tft.setCursor(boxX + 7, boxY + 20);
-      tft.setTextColor(TFT_DARKGREY);
-      tft.setTextSize(1);
-      tft.println("Nessuna prenotazione futura");
-    }
+    drawNextReservationBox(nextFutureIdx, 180);
   }
 
   // Radar in fondo come debug
@@ -1099,6 +1102,9 @@ void processBookingTimeHold(bool minusDown, bool plusDown) {
 void drawBookingDetails() {
   if (statoAttuale != BOOK_DETAILS || bookingErrorVisible) return;
 
+  time_t nowTs = time(nullptr);
+  int nextFutureIdx = findNextFutureReservationIndex(nowTs);
+
   tft.setCursor(10, 40);
   tft.setTextColor(TFT_WHITE);
   tft.setTextSize(2);
@@ -1117,12 +1123,14 @@ void drawBookingDetails() {
   tft.setTextSize(3);
   tft.printf("FINE: %02d:%02d", endHour, endMin);
 
-  tft.setCursor(10, 220);
+  drawNextReservationBox(nextFutureIdx, 175);
+
+  tft.setCursor(10, 240);
   tft.setTextColor(TFT_LIGHTGREY);
   tft.setTextSize(1);
   tft.println("A=Indietro  -/+ = 15 min");
 
-  tft.setCursor(10, 240);
+  tft.setCursor(10, 255);
   tft.setTextColor(TFT_GREEN);
   tft.println("Tieni premuto B per confermare");
 
@@ -1131,7 +1139,7 @@ void drawBookingDetails() {
 
 void drawBookingConfirmProgress(uint32_t holdMs) {
   const int x = 10;
-  const int y = 270;
+  const int y = 285;
   const int w = 220;
   const int h = 18;
 
