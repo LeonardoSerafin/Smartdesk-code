@@ -1,282 +1,4 @@
-#include <Arduino.h>
-#include <WiFi.h>
-#include <esp_now.h>
-#include <esp_wifi.h>
-#include <ArduinoJson.h>
-#include <time.h>
-#include <sys/time.h>
-#include <Adafruit_NeoPixel.h>
-#include <TFT_eSPI.h>
-#include <SPI.h>
-#include <Wire.h>
-#include <Adafruit_PN532.h>
-
-// -------------------- ESP-NOW protocol (identico a table-esp.ino) --------------------
-static const uint8_t ESPNOW_CHANNEL = 1;
-static const uint32_t CLOCK_PRINT_INTERVAL_MS = 5000;
-
-#pragma pack(push, 1)
-struct ChunkPacket {
-  uint32_t msgId;
-  uint16_t tableId;
-  uint16_t chunkIndex;
-  uint16_t chunkCount;
-  uint16_t payloadLen;
-  char payload[200];
-};
-
-struct AckPacket {
-  uint32_t msgId;
-  uint16_t tableId;
-  uint8_t ok;
-};
-
-struct TimePacket {
-  uint8_t type;      // 'T'
-  uint32_t msgId;
-  uint32_t epochUtc; // secondi UTC
-};
-
-struct BookingReqPacket {
-  uint8_t type;      // 'B'
-  uint8_t action;    // 1=create, 2=cancel
-  uint32_t msgId;
-  uint16_t tableId;
-  uint64_t reservationId;
-  uint32_t oraInizio;
-  uint32_t oraFine;
-  char uid[24];
-};
-
-struct BookingResPacket {
-  uint8_t type;      // 'R'
-  uint8_t action;    // 1=create, 2=cancel
-  uint32_t msgId;
-  uint16_t tableId;
-  uint8_t ok;
-  uint8_t reason;    // 0=none, 1=conflict, 2=timeout, 3=server, 4=bad request
-  uint64_t reservationId;
-};
-#pragma pack(pop)
-
-// -------------------- Hardware config --------------------
-#define TABLE_ID 1
-// radar
-#define SENSOR_RX 4
-#define SENSOR_TX 16
-// nfc
-#define SDA_NFC 32
-#define SCL_NFC 33
-// display
-#define TFT_MISO 19
-#define TFT_MOSI 23
-#define TFT_SCLK 18
-#define TFT_CS   5  // Chip select control pin
-#define TFT_DC    2  // Data Command control pin
-#define TFT_RST   17  // Reset pin (could connect to RST pin)
-#define TFT_BL   21
-#define TFT_BACKLIGHT_ON HIGH
-// led
-#define LED_PIN 15
-#define NUM_LEDS 35
-
-// Touch outputs (adatta i pin alla tua scheda)
-#define TOUCH_OUT1_PIN 13
-#define TOUCH_OUT2_PIN 12
-#define TOUCH_OUT3_PIN 14
-#define TOUCH_OUT4_PIN 27
-
-// Radar timing (confermato)
-#define DELAY_OCCUPATO 3000
-#define TIMEOUT_LIBERO 8000
-
-// Automazioni tavolo
-static const uint32_t TIMEOUT_CANCELLAZIONE = 30000;
-static const uint32_t TIMEOUT_AUTOBOOK = 20000;
-static const uint32_t LONG_PRESS_CONFIRM_MS = 2000;
-static const uint32_t BOOK_REQUEST_TIMEOUT_MS = 7000;
-static const uint32_t BOOK_ERROR_DISPLAY_MS = 5000;
-static const uint32_t BOOK_START_OFFSET_S = 1;
-static const uint32_t PRESENCE_INVITE_DELAY_MS = 30000;
-static const uint32_t ABSENCE_CANCEL_TIMEOUT_MS = 600000;
-static const uint32_t ABSENCE_CANCEL_WINDOW_S = 600;
-static const uint32_t CHECKIN_CONFIRM_OCCUPIED_MS = 30000;
-static const int PRESENCE_PROGRESS_BLOCKS = 10;
-static const int BOOK_TIME_STEP_MIN = 15;
-static const uint32_t BOOK_REPEAT_INITIAL_DELAY_MS = 450;
-static const uint32_t BOOK_REPEAT_INTERVAL_MS = 140;
-
-const uint8_t MASTER_UID_SUFFIX = 0x0B;
-
-// -------------------- Stato sistema --------------------
-enum StatoSistema { VIEW, BOOK_WAIT_NFC, BOOK_DETAILS };
-StatoSistema statoAttuale = VIEW;
-
-TFT_eSPI tft = TFT_eSPI();
-Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
-Adafruit_PN532 nfc(SDA_NFC, SCL_NFC);
-
-// -------------------- Stato prenotazioni --------------------
-struct Reservation {
-  int64_t id;
-  String nome;
-  uint32_t oraInizio;
-  uint32_t oraFine;
-  bool localOnly;
-  bool checkedIn;
-  bool bookedFromTable;
-};
-
-static const int MAX_RESERVATIONS = 24;
-Reservation reservations[MAX_RESERVATIONS];
-int reservationsCount = 0;
-int64_t nextLocalId = -1;
-
-// -------------------- Stato ESP-NOW RX --------------------
-String reassembled;
-uint32_t currentMsgId = 0;
-uint16_t currentTableId = 0;
-uint16_t expectedChunks = 0;
-uint16_t receivedChunks = 0;
-bool started = false;
-
-// -------------------- Stato tempo --------------------
-bool timeSynced = false;
-uint32_t lastClockPrintMs = 0;
-
-// JSON ricevuto da ESP-NOW, da processare nel loop (fuori callback radio).
-String pendingReservationsJson;
-bool pendingReservationsReady = false;
-portMUX_TYPE pendingReservationsMux = portMUX_INITIALIZER_UNLOCKED;
-
-uint8_t knownHubMac[6] = {0};
-bool hubMacKnown = false;
-
-enum BookingAction : uint8_t {
-  BOOK_ACTION_NONE = 0,
-  BOOK_ACTION_CREATE = 1,
-  BOOK_ACTION_CANCEL = 2
-};
-
-enum BookingReason : uint8_t {
-  BOOK_REASON_NONE = 0,
-  BOOK_REASON_CONFLICT = 1,
-  BOOK_REASON_SERVER_TIMEOUT = 2,
-  BOOK_REASON_SERVER_ERROR = 3,
-  BOOK_REASON_BAD_REQUEST = 4
-};
-
-bool bookingPending = false;
-uint8_t bookingPendingAction = BOOK_ACTION_NONE;
-uint32_t bookingPendingMsgId = 0;
-uint32_t bookingPendingStartMs = 0;
-uint32_t bookingPendingOraInizio = 0;
-uint32_t bookingPendingOraFine = 0;
-uint64_t bookingPendingReservationId = 0;
-String bookingPendingUid;
-bool bookingPendingFromTable = false;
-uint32_t nextBookingMsgId = 1;
-
-bool bookingErrorVisible = false;
-unsigned long bookingErrorUntilMs = 0;
-bool bookingErrorReturnToBooking = false;
-String currentBookingUidHex;
-
-bool bookingResultReady = false;
-BookingResPacket bookingResult;
-portMUX_TYPE bookingResultMux = portMUX_INITIALIZER_UNLOCKED;
-
-// -------------------- Stato radar --------------------
-bool presenzaConfermata = false;
-bool inAttesaConferma = false;
-bool ultimoStatoOn = false;
-unsigned long ultimoOn = 0;
-unsigned long primaPresenza = 0;
-String rigaRadar;
-
-// -------------------- Stato UI --------------------
-int bookingEndMinutes = 10 * 60; // minuti da mezzanotte, step 15
-
-bool bloccoLeds = false;
-unsigned long startAssenza = 0;
-unsigned long checkInPresenceStartMs = 0;
-int64_t checkInTrackingReservationId = 0;
-unsigned long startPresenza = 0;
-unsigned long lastDisplayRefreshMs = 0;
-bool presenceInviteVisible = false;
-
-// -------------------- Stato touch --------------------
-struct TouchButtonState {
-  uint8_t pin;
-  bool lastRaw;
-  bool stableRaw;
-  bool pressedLatch;
-  unsigned long lastChangeMs;
-};
-
-TouchButtonState btnOut1 = {TOUCH_OUT1_PIN, false, false, false, 0};
-TouchButtonState btnOut2 = {TOUCH_OUT2_PIN, false, false, false, 0};
-TouchButtonState btnOut3 = {TOUCH_OUT3_PIN, false, false, false, 0};
-TouchButtonState btnOut4 = {TOUCH_OUT4_PIN, false, false, false, 0};
-
-unsigned long bookingConfirmHoldStartMs = 0;
-unsigned long bookingMinusHoldStartMs = 0;
-unsigned long bookingMinusLastRepeatMs = 0;
-unsigned long bookingPlusHoldStartMs = 0;
-unsigned long bookingPlusLastRepeatMs = 0;
-
-// -------------------- Forward declarations --------------------
-bool ensurePeer(const uint8_t *mac);
-void sendAck(const uint8_t *hubMac, uint32_t msgId, uint16_t tableId, uint8_t ok);
-void onDataRecv(const esp_now_recv_info_t *recvInfo, const uint8_t *data, int len);
-
-void applyTimeSync(uint32_t epochUtc);
-String formatEpochLocal(uint32_t ts);
-void printCurrentClockIfDue();
-
-void parseReservationsFromJson(const String &json);
-void printReservationsSummary();
-void processPendingReservationsFromEspNow();
-void processPendingBookingResponse();
-void processBookingTimeout();
-
-void inviaComando(const uint8_t *payload, size_t len);
-void configuraSensoreRadar();
-void processRadarInput();
-void updateRadarState();
-
-void setAllLeds(uint32_t color);
-void displayTimeRemaining(time_t startTs, time_t endTs, time_t nowTs);
-void writeOnLcd(const String &title, const String &sub, uint16_t color);
-
-bool touchPressed(TouchButtonState &btn);
-bool touchIsPressed(TouchButtonState &btn);
-void handleButtons();
-void handleNfc();
-void drawBookingDetails();
-void drawBookingConfirmProgress(uint32_t holdMs);
-void resetBookingEndSelection();
-void adjustBookingEndMinutes(int steps);
-void processBookingTimeHold(bool minusDown, bool plusDown);
-void renderView(bool force = false);
-void drawPresenceProgressBlocks(uint32_t elapsedMs);
-void showPresenceInviteScreen();
-void showBookingError(const String &msg);
-void showInvalidEndTimeError();
-String bookingReasonToText(uint8_t reason);
-String uidToHex(const uint8_t *uid, uint8_t uidLen);
-
-int findActiveReservationIndex(time_t nowTs);
-int findReservationIndexById(int64_t id);
-void clearReservations();
-void addReservation(int64_t id, const String &nome, uint32_t oraInizio, uint32_t oraFine, bool localOnly, bool checkedIn, bool bookedFromTable);
-void removeReservationAt(int idx);
-bool startCreateBookingRequest(const String &uidHex, uint32_t oraInizio, uint32_t oraFine, bool fromTable);
-bool startCancelBookingRequest(const Reservation &r);
-void autoCancelActiveReservation();
-void createAutoBooking();
-void createManualBooking();
-void runPresenceAutomations();
+#include "TableFunctions.h"
 
 // -------------------- ESP-NOW --------------------
 bool ensurePeer(const uint8_t *mac) {
@@ -419,22 +141,42 @@ void showBookingError(const String &msg) {
     tft.fillScreen(TFT_RED);
     tft.setTextColor(TFT_WHITE);
     tft.setTextSize(2);
-    tft.setCursor(10, 35);
+    tft.setCursor(10, 80);
     tft.println("CONFLITTO");
-    tft.setCursor(10, 65);
+    tft.setCursor(10, 110);
     tft.println("PRENOTAZIONE");
 
     tft.setTextSize(1);
-    tft.setCursor(10, 105);
+    tft.setCursor(10, 170);
     tft.println("Fascia oraria gia occupata.");
-    tft.setCursor(10, 125);
+    tft.setCursor(10, 190);
     tft.println("Seleziona una nuova ora fine.");
-    tft.setCursor(10, 155);
+    tft.setCursor(10, 230);
     tft.println("Ritorno automatico...");
     return;
   }
 
   writeOnLcd("PRENOTAZIONE", msg, TFT_RED);
+}
+
+void showInvalidCardError() {
+  bookingErrorVisible = true;
+  bookingErrorUntilMs = millis() + BOOK_ERROR_DISPLAY_MS;
+  // If we are showing the presence-invite (purple) screen, request to return
+  // to that state after the error display; otherwise don't return to booking flow.
+  bookingErrorReturnToBooking = presenceInviteVisible;
+
+  tft.fillScreen(TFT_RED);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(10, 80);
+  tft.println("TESSERA");
+  tft.setCursor(10, 110);
+  tft.println("NON VALIDA");
+
+  tft.setTextSize(1);
+  tft.setCursor(10, 190);
+  tft.println("Usa una tessera autorizzata.");
 }
 
 void showInvalidEndTimeError() {
@@ -445,17 +187,17 @@ void showInvalidEndTimeError() {
   tft.fillScreen(TFT_YELLOW);
   tft.setTextColor(TFT_BLACK);
   tft.setTextSize(2);
-  tft.setCursor(10, 35);
+  tft.setCursor(10, 80);
   tft.println("ORARIO");
-  tft.setCursor(10, 65);
+  tft.setCursor(10, 110);
   tft.println("NON VALIDO");
 
   tft.setTextSize(1);
-  tft.setCursor(10, 105);
+  tft.setCursor(10, 170);
   tft.println("L'ora di fine deve essere");
-  tft.setCursor(10, 125);
+  tft.setCursor(10, 190);
   tft.println("successiva all'istante attuale.");
-  tft.setCursor(10, 155);
+  tft.setCursor(10, 230);
   tft.println("Ritorno a prenotazione...");
 }
 
@@ -650,6 +392,20 @@ void clearReservations() {
 void addReservation(int64_t id, const String &nome, uint32_t oraInizio, uint32_t oraFine, bool localOnly, bool checkedIn, bool bookedFromTable) {
   if (oraFine <= oraInizio) return;
 
+  // Se l'ID esiste già, lo aggiorniamo. Questo previene doppioni
+  // causati da JSON che arrivano prima delle conferme.
+  int existingIdx = findReservationIndexById(id);
+  if (existingIdx >= 0) {
+    reservations[existingIdx].nome = nome;
+    reservations[existingIdx].oraInizio = oraInizio;
+    reservations[existingIdx].oraFine = oraFine;
+    reservations[existingIdx].localOnly = localOnly;
+    // Manteniamo le variabili "vere" se lo erano già o se la nuova chiamata le imposta a true
+    if (checkedIn) reservations[existingIdx].checkedIn = true;
+    if (bookedFromTable) reservations[existingIdx].bookedFromTable = true;
+    return;
+  }
+
   if (reservationsCount >= MAX_RESERVATIONS) {
     // Mantieni le prenotazioni piu recenti.
     for (int i = 1; i < reservationsCount; i++) {
@@ -684,6 +440,23 @@ int findActiveReservationIndex(time_t nowTs) {
     }
   }
   return -1;
+}
+
+int findNextFutureReservationIndex(time_t nowTs) {
+  int bestIdx = -1;
+  time_t bestStart = 0;
+
+  for (int i = 0; i < reservationsCount; i++) {
+    time_t startTs = static_cast<time_t>(reservations[i].oraInizio);
+    if (startTs <= nowTs) continue;
+
+    if (bestIdx < 0 || startTs < bestStart) {
+      bestIdx = i;
+      bestStart = startTs;
+    }
+  }
+
+  return bestIdx;
 }
 
 int findReservationIndexById(int64_t id) {
@@ -883,23 +656,23 @@ void displayTimeRemaining(time_t startTs, time_t endTs, time_t nowTs) {
   strip.show();
 
   int minRimanenti = static_cast<int>((endTs - nowTs) / 60);
-  tft.fillRect(10, 100, 220, 20, TFT_BLACK);
-  tft.setCursor(10, 105);
+  tft.fillRect(0, 205, 240, 30, TFT_BLACK);
+  tft.setCursor(10, 210);
   tft.setTextColor(TFT_LIGHTGREY);
-  tft.setTextSize(1);
-  if (minRimanenti > 0) tft.printf("Scadenza tra: %d min", minRimanenti);
+  tft.setTextSize(2);
+  if (minRimanenti > 0) tft.printf("Scadenza: %d min", minRimanenti);
 }
 
 void writeOnLcd(const String &title, const String &sub, uint16_t color) {
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(color);
   tft.setTextSize(2);
-  tft.setCursor(10, 60);
+  tft.setCursor(10, 120);
   tft.println(title);
 
   tft.setTextColor(TFT_WHITE);
   tft.setTextSize(1);
-  tft.setCursor(10, 90);
+  tft.setCursor(10, 160);
   tft.println(sub);
 }
 
@@ -910,53 +683,85 @@ void renderView(bool force) {
 
   time_t nowTs = time(nullptr);
   int activeIdx = findActiveReservationIndex(nowTs);
+  int nextFutureIdx = findNextFutureReservationIndex(nowTs);
 
   tft.fillScreen(TFT_BLACK);
-  tft.drawFastHLine(0, 32, 240, TFT_DARKGREY);
 
-  tft.setCursor(10, 10);
+  // Orologio grande al centro
   tft.setTextColor(TFT_WHITE);
-  tft.setTextSize(2);
+  tft.setTextSize(4);
   if (timeSynced) {
     struct tm ti;
     localtime_r(&nowTs, &ti);
     char b[8];
     strftime(b, sizeof(b), "%H:%M", &ti);
+    // 5 caratteri in TextSize(4) occupano circa 5*24=120px 
+    tft.setCursor((240 - 120) / 2, 15);
     tft.println(b);
   } else {
+    tft.setCursor((240 - 120) / 2, 15);
     tft.println("--:--");
   }
 
-  tft.setCursor(130, 10);
-  tft.setTextSize(1);
-  tft.setTextColor(TFT_LIGHTGREY);
-  tft.printf("Radar: %s", presenzaConfermata ? "ON" : "OFF");
+  // 1a linea separatrice
+  tft.drawFastHLine(0, 60, 240, TFT_DARKGREY);
 
-  tft.setCursor(10, 50);
+  // Numero tavolo centrato
+  tft.setTextColor(TFT_CYAN);
+  tft.setTextSize(2);
+  String tableStr = String("TAVOLO ") + String(TABLE_ID);
+  int tableStrW = tableStr.length() * 12; // TextSize(2) -> 12px width per char
+  tft.setCursor((240 - tableStrW) / 2, 72);
+  tft.println(tableStr);
+
+  // 2a linea separatrice
+  tft.drawFastHLine(0, 95, 240, TFT_DARKGREY);
+
+  tft.setCursor(10, 115);
   if (activeIdx >= 0) {
     const Reservation &r = reservations[activeIdx];
     tft.setTextColor(TFT_RED);
     tft.setTextSize(2);
-    tft.println("TAVOLO 1: OCCUPATO");
+    tft.println("STATO: OCCUPATO");
 
-    tft.setCursor(10, 80);
+    tft.setCursor(10, 150);
     tft.setTextColor(TFT_WHITE);
-    tft.setTextSize(1);
-    tft.printf("Utente: %s", r.nome.c_str());
+    tft.setTextSize(2);
+    tft.printf("Utente:\n %s", r.nome.c_str());
 
     displayTimeRemaining(static_cast<time_t>(r.oraInizio), static_cast<time_t>(r.oraFine), nowTs);
   } else {
     tft.setTextColor(TFT_GREEN);
     tft.setTextSize(2);
-    tft.println("TAVOLO 1: LIBERO");
+    tft.println("STATO: LIBERO");
 
-    tft.setCursor(10, 80);
+    tft.setCursor(10, 150);
     tft.setTextColor(TFT_WHITE);
     tft.setTextSize(1);
     tft.println("Pronto per prenotazione");
 
     if (!bloccoLeds) setAllLeds(strip.Color(0, 50, 0));
   }
+
+  tft.setCursor(10, 240);
+  tft.setTextSize(1);
+  if (nextFutureIdx >= 0) {
+    const Reservation &nextRes = reservations[nextFutureIdx];
+    tft.setTextColor(TFT_LIGHTGREY);
+    tft.println("Prossima prenotazione:");
+    tft.setTextColor(TFT_WHITE);
+    String nextTime = formatEpochLocal(nextRes.oraInizio).substring(11, 16);
+    tft.printf("%s - %s", nextTime.c_str(), nextRes.nome.c_str());
+  } else {
+    tft.setTextColor(TFT_DARKGREY);
+    tft.println("Nessuna prenotazione futura");
+  }
+
+  // Radar in fondo come debug
+  tft.setCursor(10, 300);
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_DARKGREY);
+  tft.printf("Radar: %s", presenzaConfermata ? "ON" : "OFF");
 }
 
 void drawPresenceProgressBlocks(uint32_t elapsedMs) {
@@ -965,9 +770,9 @@ void drawPresenceProgressBlocks(uint32_t elapsedMs) {
   if (filled > PRESENCE_PROGRESS_BLOCKS) filled = PRESENCE_PROGRESS_BLOCKS;
 
   const int x = 10;
-  const int y = 170;
+  const int y = 265;
   const int w = 220;
-  const int h = 14;
+  const int h = 18;
   const int spacing = 2;
   const int blockW = (w - (PRESENCE_PROGRESS_BLOCKS - 1) * spacing) / PRESENCE_PROGRESS_BLOCKS;
 
@@ -987,15 +792,15 @@ void showPresenceInviteScreen() {
   tft.fillScreen(TFT_MAGENTA);
   tft.setTextColor(TFT_WHITE);
   tft.setTextSize(2);
-  tft.setCursor(10, 35);
+  tft.setCursor(10, 80);
   tft.println("TAVOLO LIBERO");
-  tft.setCursor(10, 65);
+  tft.setCursor(10, 110);
   tft.println("PRENOTATI");
 
   tft.setTextSize(1);
-  tft.setCursor(10, 105);
+  tft.setCursor(10, 170);
   tft.println("Se ti sei seduto, effettua");
-  tft.setCursor(10, 123);
+  tft.setCursor(10, 190);
   tft.println("la prenotazione con tessera.");
 }
 
@@ -1029,7 +834,9 @@ bool touchIsPressed(TouchButtonState &btn) {
 }
 
 void handleButtons() {
-  if (bookingPending || bookingErrorVisible) return;
+  // If booking flow is pending, an error is visible, or we are showing the
+  // presence-invite (purple) screen, ignore all touch input.
+  if (bookingPending || bookingErrorVisible || presenceInviteVisible) return;
 
   bool out1Pressed = touchPressed(btnOut1);
   bool out2Pressed = touchPressed(btnOut2);
@@ -1047,8 +854,8 @@ void handleButtons() {
       tft.setTextSize(2);
       tft.setCursor(10, 100);
       tft.println("PRENOTAZIONE");
-      tft.setCursor(10, 130);
-      tft.println("Avvicina la tessera...");
+      tft.setCursor(10, 140);
+      tft.println("Avvicina tessera...");
     }
     return;
   }
@@ -1134,18 +941,18 @@ void handleNfc() {
     bookingMinusHoldStartMs = 0;
     bookingPlusHoldStartMs = 0;
     tft.fillScreen(TFT_BLACK);
-  } else if (statoAttuale == BOOK_WAIT_NFC) {
-    if (presenceInviteVisible) {
-      // In modalita invito ignoriamo tessere non valide per evitare escape.
-      writeOnLcd("PRENOTAZIONE", "Tessera non valida", TFT_RED);
-      delay(700);
-      showPresenceInviteScreen();
-    } else {
-      autoCancelActiveReservation();
-      statoAttuale = VIEW;
-      if (!bookingPending) {
-        renderView(true);
+  } else {
+    showInvalidCardError();
+    if (statoAttuale == BOOK_WAIT_NFC) {
+      if (presenceInviteVisible) {
+        // Disabilitiamo il flag temporaneamente.
+        // Al termine dell'errore (quando si torna a VIEW), 
+        // runPresenceAutomations rilevera' che deve ri-mostrare l'invito.
+        presenceInviteVisible = false;
+      } else {
+        autoCancelActiveReservation();
       }
+      statoAttuale = VIEW;
     }
   }
 }
@@ -1219,12 +1026,12 @@ void processBookingTimeHold(bool minusDown, bool plusDown) {
 void drawBookingDetails() {
   if (statoAttuale != BOOK_DETAILS || bookingErrorVisible) return;
 
-  tft.setCursor(10, 20);
+  tft.setCursor(10, 40);
   tft.setTextColor(TFT_WHITE);
   tft.setTextSize(2);
   tft.println("CONFIGURA:");
 
-  tft.setCursor(10, 50);
+  tft.setCursor(10, 80);
   tft.setTextColor(TFT_WHITE);
   tft.setTextSize(1);
   tft.printf("UID: %s", currentBookingUidHex.length() == 0 ? "N/A" : currentBookingUidHex.c_str());
@@ -1232,17 +1039,17 @@ void drawBookingDetails() {
   int endHour = bookingEndMinutes / 60;
   int endMin = bookingEndMinutes % 60;
 
-  tft.setCursor(10, 95);
+  tft.setCursor(10, 130);
   tft.setTextColor(TFT_CYAN);
-  tft.setTextSize(2);
+  tft.setTextSize(3);
   tft.printf("FINE: %02d:%02d", endHour, endMin);
 
-  tft.setCursor(10, 165);
+  tft.setCursor(10, 220);
   tft.setTextColor(TFT_LIGHTGREY);
   tft.setTextSize(1);
   tft.println("A=Indietro  -/+ = 15 min");
 
-  tft.setCursor(10, 182);
+  tft.setCursor(10, 240);
   tft.setTextColor(TFT_GREEN);
   tft.println("Tieni premuto B per confermare");
 
@@ -1251,9 +1058,9 @@ void drawBookingDetails() {
 
 void drawBookingConfirmProgress(uint32_t holdMs) {
   const int x = 10;
-  const int y = 205;
+  const int y = 270;
   const int w = 220;
-  const int h = 12;
+  const int h = 18;
 
   if (holdMs > LONG_PRESS_CONFIRM_MS) holdMs = LONG_PRESS_CONFIRM_MS;
   int fillW = static_cast<int>((static_cast<float>(holdMs) / LONG_PRESS_CONFIRM_MS) * w);
@@ -1360,17 +1167,14 @@ void runPresenceAutomations() {
     }
 
     if (!r.checkedIn && withinCancelWindow) {
-      if (startAssenza == 0) startAssenza = millis();
-      unsigned long trascorso = millis() - startAssenza;
+      int secondiRimanenti = static_cast<int>((r.oraInizio + ABSENCE_CANCEL_WINDOW_S) - nowTs);
+      if (secondiRimanenti < 0) secondiRimanenti = 0;
 
-      if(trascorso < ABSENCE_CANCEL_TIMEOUT_MS) {
-          int rim = static_cast<int>((ABSENCE_CANCEL_TIMEOUT_MS - trascorso) / 1000);
-          tft.fillRect(0, 130, 240, 40, TFT_BLACK);
-          tft.setCursor(10, 140);
-          tft.setTextColor(TFT_YELLOW);
-          tft.setTextSize(1);
-          tft.printf("Assente: cancellazione in %ds", rim);
-      }
+      tft.fillRect(0, 230, 240, 40, TFT_BLACK);
+      tft.setCursor(10, 240);
+      tft.setTextColor(TFT_YELLOW);
+      tft.setTextSize(1);
+      tft.printf("Assente: cancellazione in %ds", secondiRimanenti);
 
       if (presenzaConfermata) {
         if (checkInPresenceStartMs == 0) {
@@ -1432,12 +1236,13 @@ void runPresenceAutomations() {
       if (startPresenza == 0) {
         startPresenza = millis();
       }
+      absenceInPurpleScreenStartMs = 0;
 
       unsigned long trascorso = millis() - startPresenza;
       if (trascorso < PRESENCE_INVITE_DELAY_MS) {
         //int rim = static_cast<int>((PRESENCE_INVITE_DELAY_MS - trascorso) / 1000);
-        tft.fillRect(0, 130, 240, 35, TFT_BLACK);
-        tft.setCursor(10, 140);
+        tft.fillRect(0, 240, 240, 35, TFT_BLACK);
+        tft.setCursor(10, 250);
         tft.setTextColor(TFT_MAGENTA);
         tft.setTextSize(1);
         //tft.printf("Prenota il tavolo tra: %ds", rim);
@@ -1449,10 +1254,23 @@ void runPresenceAutomations() {
         }
       }
     } else if (startPresenza != 0) {
-      startPresenza = 0;
-      presenceInviteVisible = false;
-      bloccoLeds = false;
-      renderView(true);
+      if (presenceInviteVisible) {
+        if (absenceInPurpleScreenStartMs == 0) {
+          absenceInPurpleScreenStartMs = millis();
+        }
+        if (millis() - absenceInPurpleScreenStartMs >= 60000UL) {
+          startPresenza = 0;
+          absenceInPurpleScreenStartMs = 0;
+          presenceInviteVisible = false;
+          bloccoLeds = false;
+          renderView(true);
+        }
+      } else {
+        startPresenza = 0;
+        presenceInviteVisible = false;
+        bloccoLeds = false;
+        renderView(true);
+      }
     }
 
     startAssenza = 0;
@@ -1460,90 +1278,3 @@ void runPresenceAutomations() {
 }
 
 // -------------------- Setup/Loop --------------------
-void setup() {
-  Serial.begin(115200);
-
-  setenv("TZ", "CET-1CEST,M3.5.0/2,M10.5.0/3", 1);
-  tzset();
-
-  pinMode(TOUCH_OUT1_PIN, INPUT);
-  pinMode(TOUCH_OUT2_PIN, INPUT);
-  pinMode(TOUCH_OUT3_PIN, INPUT);
-  pinMode(TOUCH_OUT4_PIN, INPUT);
-
-  strip.begin();
-  strip.setBrightness(50);
-  strip.show();
-
-  tft.init();
-  tft.setRotation(1);
-  pinMode(TFT_BL, OUTPUT);
-  digitalWrite(TFT_BL, HIGH);
-
-  Wire.begin(SDA_NFC, SCL_NFC);
-  nfc.begin();
-  if (nfc.getFirmwareVersion()) {
-    nfc.SAMConfig();
-    Serial.println("[NFC] pronto");
-  } else {
-    Serial.println("[NFC] non rilevato");
-  }
-
-  Serial2.begin(115200, SERIAL_8N1, SENSOR_RX, SENSOR_TX);
-  delay(1000);
-  configuraSensoreRadar();
-
-  WiFi.mode(WIFI_STA);
-  esp_wifi_set_promiscuous(true);
-  esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
-  esp_wifi_set_promiscuous(false);
-
-  if (esp_now_init() != ESP_OK) {
-    Serial.println("[ESPNOW] init failed");
-    while (true) delay(1000);
-  }
-  esp_now_register_recv_cb(onDataRecv);
-
-  Serial.print("[BOOT] Table MAC: ");
-  Serial.println(WiFi.macAddress());
-
-  writeOnLcd("TAVOLO AVVIATO", "In attesa dati ESP-NOW", TFT_GREEN);
-  delay(1000);
-  renderView(true);
-}
-
-void loop() {
-  processRadarInput();
-  updateRadarState();
-  processPendingReservationsFromEspNow();
-  processPendingBookingResponse();
-  processBookingTimeout();
-
-  if (bookingErrorVisible && millis() >= bookingErrorUntilMs) {
-    bookingErrorVisible = false;
-    if (bookingErrorReturnToBooking) {
-      bookingErrorReturnToBooking = false;
-      statoAttuale = BOOK_DETAILS;
-      bookingConfirmHoldStartMs = 0;
-      bookingMinusHoldStartMs = 0;
-      bookingMinusLastRepeatMs = 0;
-      bookingPlusHoldStartMs = 0;
-      bookingPlusLastRepeatMs = 0;
-      tft.fillScreen(TFT_BLACK);
-    } else {
-      renderView(true);
-    }
-  }
-
-  handleButtons();
-  handleNfc();
-  drawBookingDetails();
-
-  runPresenceAutomations();
-
-  if (statoAttuale == VIEW && !bookingPending && !bookingErrorVisible && !presenceInviteVisible) {
-    renderView(false);
-  }
-
-  printCurrentClockIfDue();
-}
