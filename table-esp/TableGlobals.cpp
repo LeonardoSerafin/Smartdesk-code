@@ -3,7 +3,7 @@
 StatoSistema statoAttuale = VIEW;
 TFT_eSPI tft = TFT_eSPI();
 Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
-Adafruit_PN532 nfc(SDA_NFC, SCL_NFC);
+Adafruit_PN532 nfc(PN532_IRQ, PN532_RESET, &Wire);
 
 
 Reservation reservations[MAX_RESERVATIONS];

@@ -15,6 +15,9 @@ static const uint32_t CLOCK_PRINT_INTERVAL_MS = 5000;
 // nfc
 #define SDA_NFC 32
 #define SCL_NFC 33
+// Pin di controllo richiesti dal costruttore I2C della libreria Adafruit_PN532.
+#define PN532_IRQ 25
+#define PN532_RESET 26
 // display
 #define TFT_MISO 19
 #define TFT_MOSI 23

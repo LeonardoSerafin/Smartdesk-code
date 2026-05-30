@@ -27,6 +27,7 @@ void writeOnLcd(const String &title, const String &sub, uint16_t color);
 bool touchPressed(TouchButtonState &btn);
 bool touchIsPressed(TouchButtonState &btn);
 void handleButtons();
+void setupNfcInterrupt();
 void handleNfc();
 void drawBookingDetails();
 void drawBookingConfirmProgress(uint32_t holdMs);

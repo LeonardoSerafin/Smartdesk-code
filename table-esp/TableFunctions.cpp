@@ -1,5 +1,62 @@
 #include "TableFunctions.h"
 
+static volatile bool nfcIrqPending = false;
+static bool nfcInterruptModeEnabled = false;
+static bool nfcDetectionArmed = false;
+
+static void IRAM_ATTR onNfcIrq() {
+  nfcIrqPending = true;
+}
+
+static void armNfcDetection() {
+  detachInterrupt(digitalPinToInterrupt(PN532_IRQ));
+  nfcIrqPending = false;
+  // In questo flow Adafruit, false significa anche "nessuna tessera ancora".
+  bool cardAlreadyPresent = nfc.startPassiveTargetIDDetection(PN532_MIFARE_ISO14443A);
+  nfcDetectionArmed = true;
+
+  attachInterrupt(digitalPinToInterrupt(PN532_IRQ), onNfcIrq, FALLING);
+  if (cardAlreadyPresent || digitalRead(PN532_IRQ) == LOW) {
+    nfcIrqPending = true;
+  }
+}
+
+static void drawNextReservationBox(int nextFutureIdx, int boxY) {
+  const int boxX = 8;
+  const int boxW = 224;
+  const int boxH = 55;
+
+  tft.fillRect(boxX, boxY, boxW, boxH, TFT_BLACK);
+  tft.drawRect(boxX, boxY, boxW, boxH, TFT_DARKGREY);
+
+  if (nextFutureIdx >= 0) {
+    const Reservation &nextRes = reservations[nextFutureIdx];
+    String nextTime = formatEpochLocal(nextRes.oraInizio).substring(11, 16);
+    String nextName = nextRes.nome;
+    if (nextName.length() > 30) nextName = nextName.substring(0, 27) + "...";
+
+    tft.setCursor(boxX + 7, boxY + 6);
+    tft.setTextColor(TFT_CYAN);
+    tft.setTextSize(1);
+    tft.println("PROSSIMA PRENOTAZIONE");
+
+    tft.setCursor(boxX + 7, boxY + 21);
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    tft.printf("Ore %s", nextTime.c_str());
+
+    tft.setCursor(boxX + 7, boxY + 42);
+    tft.setTextColor(TFT_LIGHTGREY);
+    tft.setTextSize(1);
+    tft.print(nextName);
+  } else {
+    tft.setCursor(boxX + 7, boxY + 20);
+    tft.setTextColor(TFT_DARKGREY);
+    tft.setTextSize(1);
+    tft.println("Nessuna prenotazione futura");
+  }
+}
+
 // -------------------- ESP-NOW --------------------
 bool ensurePeer(const uint8_t *mac) {
   if (esp_now_is_peer_exist(mac)) return true;
@@ -683,7 +740,7 @@ void renderView(bool force) {
 
   time_t nowTs = time(nullptr);
   int activeIdx = findActiveReservationIndex(nowTs);
-  int nextFutureIdx = findNextFutureReservationIndex(nowTs);
+  int nextFutureIdx = activeIdx < 0 ? findNextFutureReservationIndex(nowTs) : -1;
 
   tft.fillScreen(TFT_BLACK);
 
@@ -743,18 +800,8 @@ void renderView(bool force) {
     if (!bloccoLeds) setAllLeds(strip.Color(0, 50, 0));
   }
 
-  tft.setCursor(10, 240);
-  tft.setTextSize(1);
-  if (nextFutureIdx >= 0) {
-    const Reservation &nextRes = reservations[nextFutureIdx];
-    tft.setTextColor(TFT_LIGHTGREY);
-    tft.println("Prossima prenotazione:");
-    tft.setTextColor(TFT_WHITE);
-    String nextTime = formatEpochLocal(nextRes.oraInizio).substring(11, 16);
-    tft.printf("%s - %s", nextTime.c_str(), nextRes.nome.c_str());
-  } else {
-    tft.setTextColor(TFT_DARKGREY);
-    tft.println("Nessuna prenotazione futura");
+  if (activeIdx < 0) {
+    drawNextReservationBox(nextFutureIdx, 180);
   }
 
   // Radar in fondo come debug
@@ -922,18 +969,47 @@ void handleButtons() {
   }
 }
 
+void setupNfcInterrupt() {
+  pinMode(PN532_IRQ, INPUT_PULLUP);
+  nfcInterruptModeEnabled = true;
+  nfcDetectionArmed = false;
+  nfcIrqPending = false;
+  armNfcDetection();
+}
+
 void handleNfc() {
-  if (bookingPending || bookingErrorVisible) return;
-  if (statoAttuale != BOOK_WAIT_NFC && statoAttuale != VIEW) return;
-  
+  if (!nfcInterruptModeEnabled) return;
+
+  if (!nfcDetectionArmed) {
+    armNfcDetection();
+    return;
+  }
+
+  if (!nfcIrqPending && digitalRead(PN532_IRQ) == LOW) {
+    nfcIrqPending = true;
+  }
+
+  if (!nfcIrqPending) return;
+
+  nfcIrqPending = false;
+  nfcDetectionArmed = false;
+
   uint8_t uid[7] = {0};
   uint8_t uidLen = 0;
-  if (!nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, 50)) return;
+  bool cardRead = nfc.readDetectedPassiveTargetID(uid, &uidLen);
+  armNfcDetection();
+
+  if (!cardRead) return;
+  if (bookingPending || bookingErrorVisible) return;
+  if (statoAttuale != BOOK_WAIT_NFC && statoAttuale != VIEW) return;
 
   bool isMaster = (uidLen > 0) && (uid[uidLen - 1] == MASTER_UID_SUFFIX);
 
   time_t nowTs = time(nullptr);
-  if (isMaster && findActiveReservationIndex(nowTs) < 0) {
+  int activeIdx = findActiveReservationIndex(nowTs);
+  if (statoAttuale == VIEW && activeIdx >= 0) return;
+
+  if (isMaster && activeIdx < 0) {
     currentBookingUidHex = uidToHex(uid, uidLen);
     statoAttuale = BOOK_DETAILS;
     resetBookingEndSelection();
@@ -1026,6 +1102,9 @@ void processBookingTimeHold(bool minusDown, bool plusDown) {
 void drawBookingDetails() {
   if (statoAttuale != BOOK_DETAILS || bookingErrorVisible) return;
 
+  time_t nowTs = time(nullptr);
+  int nextFutureIdx = findNextFutureReservationIndex(nowTs);
+
   tft.setCursor(10, 40);
   tft.setTextColor(TFT_WHITE);
   tft.setTextSize(2);
@@ -1044,12 +1123,14 @@ void drawBookingDetails() {
   tft.setTextSize(3);
   tft.printf("FINE: %02d:%02d", endHour, endMin);
 
-  tft.setCursor(10, 220);
+  drawNextReservationBox(nextFutureIdx, 175);
+
+  tft.setCursor(10, 240);
   tft.setTextColor(TFT_LIGHTGREY);
   tft.setTextSize(1);
   tft.println("A=Indietro  -/+ = 15 min");
 
-  tft.setCursor(10, 240);
+  tft.setCursor(10, 255);
   tft.setTextColor(TFT_GREEN);
   tft.println("Tieni premuto B per confermare");
 
@@ -1058,7 +1139,7 @@ void drawBookingDetails() {
 
 void drawBookingConfirmProgress(uint32_t holdMs) {
   const int x = 10;
-  const int y = 270;
+  const int y = 285;
   const int w = 220;
   const int h = 18;
 
