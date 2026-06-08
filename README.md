@@ -112,8 +112,8 @@ Raspberry Pi script:
 | State | Description |
 | --- | --- |
 | `VIEW` | Main display state. Shows whether the table is free, occupied, or displaying current information. |
-| `BOOK_WAIT_NFC` | Waits for an NFC card to start a local booking. |
-| `BOOK_DETAILS` | Allows the user to select the end time and confirm the booking. |
+| `WAIT FOR CARD` | Waits for an NFC card to start a local booking. |
+| `CONFIGURE BOOKING` | Allows the user to select the end time and confirm the booking. |
 
 The table can be free or occupied depending on active reservations and presence detected by the radar sensor. When the table is occupied, future reservations are not shown on the main screen and the NFC reader does not produce user-facing effects.
 
