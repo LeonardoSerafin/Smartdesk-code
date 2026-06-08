@@ -27,6 +27,12 @@ Andrea Schwarz
 - Automate selected actions based on presence detection from the radar sensor.
 - Manage communication between Raspberry Pi, ESP32 hub, and ESP32 table node.
 
+## Phisical Design
+
+<div style="display: flex; justify-content: center; gap: 10%">
+<img src="docs/top-perspective.png" width="40%" /> <img src="docs/sideways-perspective.png" width="40%" />
+</div>
+
 ## Architecture
 
 The project is divided into three main components.
