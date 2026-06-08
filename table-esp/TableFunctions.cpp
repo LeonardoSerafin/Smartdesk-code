@@ -162,8 +162,8 @@ void processPendingReservationsFromEspNow() {
 
   if (json.length() == 0) return;
 
-  parseReservationsFromJson(json);
-  if (statoAttuale == VIEW) {
+  parseReservationsFromJson(json);.
+  if (statoAttuale == VIEW && !bookingPending && !bookingErrorVisible && !presenceInviteVisible) {
     renderView(true);
   }
 }
@@ -881,9 +881,12 @@ bool touchIsPressed(TouchButtonState &btn) {
 }
 
 void handleButtons() {
-  // If booking flow is pending, an error is visible, or we are showing the
-  // presence-invite (purple) screen, ignore all touch input.
-  if (bookingPending || bookingErrorVisible || presenceInviteVisible) return;
+  // Ignora il touch se c'e' un booking in corso o un errore a schermo.
+  if (bookingPending || bookingErrorVisible) return;
+  // Ignora il touch solo quando la schermata di invito (viola) e' davvero a
+  // schermo, cioe' nello stato VIEW. In BOOK_DETAILS/BOOK_WAIT_NFC i tasti
+  // devono funzionare anche con presenceInviteVisible attivo (es. tasto A).
+  if (presenceInviteVisible && statoAttuale == VIEW) return;
 
   bool out1Pressed = touchPressed(btnOut1);
   bool out2Pressed = touchPressed(btnOut2);
@@ -927,8 +930,9 @@ void handleButtons() {
     bookingMinusHoldStartMs = 0;
     bookingPlusHoldStartMs = 0;
     if (presenceInviteVisible) {
-      // Se si arriva da invito, tornare sempre alla schermata viola.
-      statoAttuale = BOOK_WAIT_NFC;
+      // Se si arriva da invito, tornare sempre alla schermata viola. Restiamo
+      // in VIEW cosi' runPresenceAutomations continua a gestire la viola.
+      statoAttuale = VIEW;
       showPresenceInviteScreen();
     } else {
       statoAttuale = VIEW;
