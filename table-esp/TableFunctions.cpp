@@ -162,7 +162,7 @@ void processPendingReservationsFromEspNow() {
 
   if (json.length() == 0) return;
 
-  parseReservationsFromJson(json);.
+  parseReservationsFromJson(json);
   if (statoAttuale == VIEW && !bookingPending && !bookingErrorVisible && !presenceInviteVisible) {
     renderView(true);
   }
