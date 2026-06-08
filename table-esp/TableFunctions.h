@@ -52,7 +52,6 @@ void removeReservationAt(int idx);
 bool startCreateBookingRequest(const String &uidHex, uint32_t oraInizio, uint32_t oraFine, bool fromTable);
 bool startCancelBookingRequest(const Reservation &r);
 void autoCancelActiveReservation();
-void createAutoBooking();
 void createManualBooking();
 void runPresenceAutomations();
 

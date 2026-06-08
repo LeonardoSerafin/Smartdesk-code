@@ -159,6 +159,11 @@ void flushPendingBookingReqToUart() {
   }
 }
 
+// UART RX interrupt: assembles incoming bytes into uartBuf one line at a time.
+// On newline the line is null-terminated and uartLineReady is raised for loop()
+// to consume; further bytes are held until the flag is cleared. Lines longer
+// than the buffer set uartOverflow and are discarded. tUartStart/tUartEnd
+// timestamp the line for the latency metrics in the ACK reply.
 void onSerial2Rx() {
   while (Serial2.available() && !uartLineReady) {
     char c = (char)Serial2.read();

@@ -42,14 +42,11 @@ static const uint32_t CLOCK_PRINT_INTERVAL_MS = 5000;
 #define TIMEOUT_LIBERO 3000
 
 // Automazioni tavolo
-static const uint32_t TIMEOUT_CANCELLAZIONE = 30000;
-static const uint32_t TIMEOUT_AUTOBOOK = 20000;
 static const uint32_t LONG_PRESS_CONFIRM_MS = 2000;
 static const uint32_t BOOK_REQUEST_TIMEOUT_MS = 7000;
 static const uint32_t BOOK_ERROR_DISPLAY_MS = 5000;
 static const uint32_t BOOK_START_OFFSET_S = 1;
 static const uint32_t PRESENCE_INVITE_DELAY_MS = 30000;
-static const uint32_t ABSENCE_CANCEL_TIMEOUT_MS = 600000;
 static const uint32_t ABSENCE_CANCEL_WINDOW_S = 600;
 static const uint32_t CHECKIN_CONFIRM_OCCUPIED_MS = 30000;
 static const int PRESENCE_PROGRESS_BLOCKS = 10;

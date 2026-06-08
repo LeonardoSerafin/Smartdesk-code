@@ -97,6 +97,10 @@ extern unsigned long checkInPresenceStartMs;
 extern int64_t checkInTrackingReservationId;
 extern unsigned long startPresenza;
 extern unsigned long lastDisplayRefreshMs;
+// True while the booking-invite (purple) screen logic is active. Dual meaning:
+// the purple screen is on display AND the current booking flow originated from
+// the invite (routes Back/error returns to the purple screen). See
+// showPresenceInviteScreen().
 extern bool presenceInviteVisible;
 
 // -------------------- Stato touch --------------------

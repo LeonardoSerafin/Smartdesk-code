@@ -40,6 +40,9 @@ bool waitSendDone(uint32_t timeoutMs) {
   return ok;
 }
 
+// Broadcasts a time-sync packet to all tables. ESP-NOW broadcasts are not
+// acknowledged, so the packet is sent twice (with a short gap) to improve the
+// odds of delivery. Each send still waits for the local send callback.
 bool sendTimeBroadcast(uint32_t msgId, uint32_t epochUtc, uint32_t &sendUs) {
   TimePacket p = {};
   p.type = (uint8_t)'T';
@@ -82,6 +85,8 @@ bool sendCurrentChunk() {
   return err == ESP_OK;
 }
 
+// ESP-NOW send callback. The signature changed in Arduino-ESP32 core 3.x, so
+// both variants are provided; both just record the status for the state machine.
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
 void onEspNowSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status) {
   (void)tx_info;
@@ -96,6 +101,9 @@ void onEspNowSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 }
 #endif
 
+// ESP-NOW receive callback. Dispatches by packet size: an AckPacket confirms a
+// chunk transfer to a table; a BookingReqPacket (type 'B') is queued for
+// forwarding to the Raspberry over UART.
 void onEspNowRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len) {
   (void)recv_info;
   if (len == (int)sizeof(AckPacket)) {

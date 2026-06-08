@@ -1,5 +1,10 @@
 #include "TableFunctions.h"
 
+// NFC reads are interrupt-driven instead of polling the I2C bus: the PN532
+// pulls PN532_IRQ low when a card enters the field.
+//   nfcIrqPending        - set by the ISR, a detection is waiting to be read
+//   nfcInterruptModeEnabled - the PN532 was found and configured at boot
+//   nfcDetectionArmed    - a passive-target detection is currently armed
 static volatile bool nfcIrqPending = false;
 static bool nfcInterruptModeEnabled = false;
 static bool nfcDetectionArmed = false;
@@ -8,10 +13,14 @@ static void IRAM_ATTR onNfcIrq() {
   nfcIrqPending = true;
 }
 
+// Arms a single passive-target detection and (re)enables the IRQ edge.
+// startPassiveTargetIDDetection returns true if a card is already in the field;
+// in this Adafruit flow "false" also just means "no card yet". If a card is
+// already present, or the IRQ line is already low, a read is marked pending
+// right away in case the falling edge occurred before the interrupt was attached.
 static void armNfcDetection() {
   detachInterrupt(digitalPinToInterrupt(PN532_IRQ));
   nfcIrqPending = false;
-  // In questo flow Adafruit, false significa anche "nessuna tessera ancora".
   bool cardAlreadyPresent = nfc.startPassiveTargetIDDetection(PN532_MIFARE_ISO14443A);
   nfcDetectionArmed = true;
 
@@ -426,6 +435,8 @@ String formatEpochLocal(uint32_t ts) {
   return String(buf);
 }
 
+// Serial heartbeat for the clock, throttled to CLOCK_PRINT_INTERVAL_MS.
+// Only logs while the clock is not yet synchronized.
 void printCurrentClockIfDue() {
   uint32_t nowMs = millis();
   if (nowMs - lastClockPrintMs < CLOCK_PRINT_INTERVAL_MS) return;
@@ -433,12 +444,7 @@ void printCurrentClockIfDue() {
 
   if (!timeSynced) {
     Serial.println("[CLOCK] non sincronizzato");
-    return;
   }
-
-  time_t nowEpoch = time(nullptr);
-  //Serial.print("[CLOCK] Ora locale: ");         // non ci serve un log continuo, ma è utile per debug e test di sincronizzazione tempo
-  //Serial.println(formatEpochLocal(static_cast<uint32_t>(nowEpoch)));
 }
 
 // -------------------- Prenotazioni --------------------
@@ -540,10 +546,15 @@ void parseReservationsFromJson(const String &json) {
   }
 
   JsonArray arr = doc["reservations"].as<JsonArray>();
-  Reservation oldReservations[MAX_RESERVATIONS];
+
+  // Carry the local-only check-in flags over the rebuild, keyed by id. Only
+  // these fields are preserved, so a lightweight snapshot is enough and avoids
+  // copying the whole Reservation array (with its String members) onto the stack.
+  struct CheckInState { int64_t id; bool checkedIn; bool bookedFromTable; };
+  CheckInState oldStates[MAX_RESERVATIONS];
   int oldCount = reservationsCount;
   for (int i = 0; i < oldCount; i++) {
-    oldReservations[i] = reservations[i];
+    oldStates[i] = {reservations[i].id, reservations[i].checkedIn, reservations[i].bookedFromTable};
   }
   clearReservations();
 
@@ -555,9 +566,9 @@ void parseReservationsFromJson(const String &json) {
     bool checkedIn = false;
     bool bookedFromTable = false;
     for (int i = 0; i < oldCount; i++) {
-      if (oldReservations[i].id == rid) {
-        checkedIn = oldReservations[i].checkedIn;
-        bookedFromTable = oldReservations[i].bookedFromTable;
+      if (oldStates[i].id == rid) {
+        checkedIn = oldStates[i].checkedIn;
+        bookedFromTable = oldStates[i].bookedFromTable;
         break;
       }
     }
@@ -606,6 +617,9 @@ void printReservationsSummary() {
 }
 
 // -------------------- Radar --------------------
+// Sends one LD2420 command frame: fixed header (FD FC FB FA), 2-byte little-
+// endian payload length, payload, fixed footer (04 03 02 01). The delay lets the
+// sensor process the command before the next one is sent.
 void inviaComando(const uint8_t *payload, size_t len) {
   const uint8_t header[] = {0xFD, 0xFC, 0xFB, 0xFA};
   const uint8_t footer[] = {0x04, 0x03, 0x02, 0x01};
@@ -618,24 +632,33 @@ void inviaComando(const uint8_t *payload, size_t len) {
   delay(300);
 }
 
+// Configures the LD2420 radar at boot with the command sequence below.
 void configuraSensoreRadar() {
   Serial.println("[RADAR] Configurazione...");
 
+  // Enter configuration mode.
   const uint8_t apri[] = {0xFF, 0x00, 0x01, 0x00};
   inviaComando(apri, sizeof(apri));
 
+  // Set the detection gate (range cell).
   const uint8_t setGate[] = {0x07, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00};
   inviaComando(setGate, sizeof(setGate));
 
+  // Set the absence (no-presence) hold delay.
   const uint8_t setDelay[] = {0x07, 0x00, 0x04, 0x00, 0x03, 0x00, 0x00, 0x00};
   inviaComando(setDelay, sizeof(setDelay));
 
+  // Exit configuration mode.
   const uint8_t chiudi[] = {0xFE, 0x00};
   inviaComando(chiudi, sizeof(chiudi));
 
   Serial.println("[RADAR] Configurazione completata");
 }
 
+// Reads the radar serial stream line by line. The LD2420 emits "ON"/"OFF"
+// lines; an "ON" refreshes ultimoOn (last presence timestamp) and, if not
+// already confirmed/pending, starts the confirmation timer (primaPresenza).
+// The ON/OFF debounce itself is applied in updateRadarState().
 void processRadarInput() {
   while (Serial2.available()) {
     char c = static_cast<char>(Serial2.read());
@@ -661,6 +684,11 @@ void processRadarInput() {
   }
 }
 
+// Applies hysteresis to the raw radar signal to produce presenzaConfermata:
+//   - presence is confirmed only after the signal stays active for
+//     DELAY_OCCUPATO (short passages, where the signal drops within 1s, are
+//     discarded);
+//   - presence is cleared after no "ON" has arrived for TIMEOUT_LIBERO.
 void updateRadarState() {
   bool nuovaPresenza = presenzaConfermata;
 
@@ -696,6 +724,10 @@ void setAllLeds(uint32_t color) {
   strip.show();
 }
 
+// Shows the reservation progress on the LED ring and the remaining minutes on
+// the display. The ring is filled proportionally to the elapsed fraction of the
+// reservation: elapsed LEDs are green, the rest red. Skipped while bloccoLeds is
+// set (the ring is being used by another screen, e.g. the booking invite).
 void displayTimeRemaining(time_t startTs, time_t endTs, time_t nowTs) {
   if (bloccoLeds) return;
 
@@ -733,6 +765,10 @@ void writeOnLcd(const String &title, const String &sub, uint16_t color) {
   tft.println(sub);
 }
 
+// Draws the main idle/occupied view. Periodic (non-forced) calls are throttled
+// to refreshPeriod and, when the resulting screen would be identical to the
+// previous one, the full redraw is skipped to avoid flicker from the screen
+// clear. Forced calls (data or state changes) always redraw.
 void renderView(bool force) {
   const unsigned long refreshPeriod = 800;
   if (!force && millis() - lastDisplayRefreshMs < refreshPeriod) return;
@@ -741,6 +777,64 @@ void renderView(bool force) {
   time_t nowTs = time(nullptr);
   int activeIdx = findActiveReservationIndex(nowTs);
   int nextFutureIdx = activeIdx < 0 ? findNextFutureReservationIndex(nowTs) : -1;
+
+  // Signature of every input that affects the drawn pixels; if unchanged on a
+  // periodic refresh the redraw is redundant and is skipped. Name/box contents
+  // only change through data updates, which always force a redraw, so tracking
+  // the reservation ids is enough here.
+  int clockMin = -1;
+  if (timeSynced) {
+    struct tm ti;
+    localtime_r(&nowTs, &ti);
+    clockMin = ti.tm_hour * 60 + ti.tm_min;
+  }
+  int64_t activeId = activeIdx >= 0 ? reservations[activeIdx].id : 0;
+  int64_t nextId = nextFutureIdx >= 0 ? reservations[nextFutureIdx].id : 0;
+  int ledsElapsed = 0;
+  int minRimanenti = 0;
+  if (activeIdx >= 0 && !bloccoLeds) {
+    const Reservation &r = reservations[activeIdx];
+    long duration = static_cast<long>(r.oraFine - r.oraInizio);
+    long elapsed = static_cast<long>(nowTs - r.oraInizio);
+    if (duration > 0) {
+      ledsElapsed = static_cast<int>((static_cast<float>(elapsed) / duration) * NUM_LEDS);
+      if (ledsElapsed < 0) ledsElapsed = 0;
+      if (ledsElapsed > NUM_LEDS) ledsElapsed = NUM_LEDS;
+      minRimanenti = static_cast<int>((r.oraFine - nowTs) / 60);
+    }
+  }
+
+  static bool hasLast = false;
+  static bool lastSynced = false;
+  static int lastClockMin = 0;
+  static int64_t lastActiveId = 0;
+  static int64_t lastNextId = 0;
+  static int lastLedsElapsed = 0;
+  static int lastMinRimanenti = 0;
+  static bool lastBloccoLeds = false;
+  static bool lastPresenza = false;
+
+  if (!force && hasLast &&
+      lastSynced == timeSynced &&
+      lastClockMin == clockMin &&
+      lastActiveId == activeId &&
+      lastNextId == nextId &&
+      lastLedsElapsed == ledsElapsed &&
+      lastMinRimanenti == minRimanenti &&
+      lastBloccoLeds == bloccoLeds &&
+      lastPresenza == presenzaConfermata) {
+    return;
+  }
+
+  hasLast = true;
+  lastSynced = timeSynced;
+  lastClockMin = clockMin;
+  lastActiveId = activeId;
+  lastNextId = nextId;
+  lastLedsElapsed = ledsElapsed;
+  lastMinRimanenti = minRimanenti;
+  lastBloccoLeds = bloccoLeds;
+  lastPresenza = presenzaConfermata;
 
   tft.fillScreen(TFT_BLACK);
 
@@ -831,6 +925,11 @@ void drawPresenceProgressBlocks(uint32_t elapsedMs) {
   }
 }
 
+// Draws the booking-invite (purple) screen shown on a free table after
+// continuous presence. Note presenceInviteVisible carries two meanings that are
+// kept in sync here: "the purple screen is on display" and "the current booking
+// flow originated from the invite" (used to route the Back button and error
+// returns back to this screen instead of the idle view).
 void showPresenceInviteScreen() {
   presenceInviteVisible = true;
   bloccoLeds = true;
@@ -981,6 +1080,10 @@ void setupNfcInterrupt() {
   armNfcDetection();
 }
 
+// Polled once per loop. When a detection is pending it reads the card UID and
+// re-arms for the next one, then routes the result: a master card on a free
+// table opens the booking details; any other card shows the invalid-card error.
+// A card is "master" when its UID ends with MASTER_UID_SUFFIX.
 void handleNfc() {
   if (!nfcInterruptModeEnabled) return;
 
@@ -1208,19 +1311,15 @@ void autoCancelActiveReservation() {
   }
 }
 
-void createAutoBooking() {
-  if (bookingPending) return;
-
-  time_t nowTs = time(nullptr);
-  if (nowTs <= 0) return;
-
-  uint32_t startTs = static_cast<uint32_t>(nowTs + BOOK_START_OFFSET_S);
-
-  if (!startCreateBookingRequest("AUTO", startTs, static_cast<uint32_t>(nowTs + 3600), true)) {
-    Serial.println("[AUTO] Invio auto-book fallito");
-  }
-}
-
+// Presence-driven automations, run every loop while the main VIEW is active.
+// Two branches depending on whether a reservation is currently active:
+//   - Occupied: auto check-in (table-made bookings are checked in at once;
+//     otherwise continuous presence for CHECKIN_CONFIRM_OCCUPIED_MS within the
+//     grace window confirms it) and auto-cancel once the grace window
+//     (ABSENCE_CANCEL_WINDOW_S) elapses with no check-in.
+//   - Free: continuous presence for PRESENCE_INVITE_DELAY_MS raises the booking
+//     invite (purple) screen; it is cleared when presence is lost (after a 60s
+//     grace if the invite is already showing).
 void runPresenceAutomations() {
   if (bookingPending) return;
   if (bookingErrorVisible) return;
@@ -1234,24 +1333,29 @@ void runPresenceAutomations() {
     bool withinCancelWindow = (nowTs >= static_cast<time_t>(r.oraInizio) &&
                                nowTs <= static_cast<time_t>(r.oraInizio + ABSENCE_CANCEL_WINDOW_S));
 
+    // Reset per-reservation check-in tracking when the active reservation changes.
     if (checkInTrackingReservationId != r.id) {
       checkInTrackingReservationId = r.id;
       checkInPresenceStartMs = 0;
       startAssenza = 0;
     }
 
+    // Table is occupied now: drop the invite screen if it was showing.
     if (presenceInviteVisible) {
       presenceInviteVisible = false;
       bloccoLeds = false;
       renderView(true);
     }
 
+    // Bookings made at the table are checked in automatically.
     if (!r.checkedIn && r.bookedFromTable) {
       r.checkedIn = true;
       Serial.println("[CHECKIN] Confermato automaticamente: prenotazione dal tavolo");
     }
 
     if (!r.checkedIn && withinCancelWindow) {
+      // Within the grace window: show the countdown and confirm the check-in
+      // once presence has been continuous for CHECKIN_CONFIRM_OCCUPIED_MS.
       int secondiRimanenti = static_cast<int>((r.oraInizio + ABSENCE_CANCEL_WINDOW_S) - nowTs);
       if (secondiRimanenti < 0) secondiRimanenti = 0;
 
@@ -1274,47 +1378,22 @@ void runPresenceAutomations() {
         }
       } else {
         checkInPresenceStartMs = 0;
-      } 
+      }
     } else {
       startAssenza = 0;
       checkInPresenceStartMs = 0;
     }
+    // Grace window elapsed without check-in: cancel the reservation.
     if(!r.checkedIn && !withinCancelWindow) {
       Serial.println("[AUTO] Prenotazione cancellata per assenza");
       startAssenza = 0;
       autoCancelActiveReservation();
       renderView(true);
     }
-    /*
-    if (!r.checkedIn && !presenzaConfermata) {
-      if (withinCancelWindow) {
-        if (startAssenza == 0) startAssenza = millis();
-
-        unsigned long trascorso = millis() - startAssenza;
-        if (trascorso < ABSENCE_CANCEL_TIMEOUT_MS) {
-          int rim = static_cast<int>((ABSENCE_CANCEL_TIMEOUT_MS - trascorso) / 1000);
-          tft.fillRect(0, 130, 240, 40, TFT_BLACK);
-          tft.setCursor(10, 140);
-          tft.setTextColor(TFT_YELLOW);
-          tft.setTextSize(1);
-          tft.printf("Assente: cancellazione in %ds", rim);
-        } else {
-          autoCancelActiveReservation();
-          startAssenza = 0;
-          renderView(true);
-        }
-      } else if (startAssenza != 0) {
-        startAssenza = 0;
-        renderView(true);
-      }
-    } else if (startAssenza != 0) {
-      startAssenza = 0;
-      renderView(true);
-    }
-    */
     startPresenza = 0;
     bloccoLeds = false;
   } else {
+    // Table is free: track continuous presence to raise the booking invite.
     checkInTrackingReservationId = 0;
     checkInPresenceStartMs = 0;
     if (presenzaConfermata) {
@@ -1325,12 +1404,11 @@ void runPresenceAutomations() {
 
       unsigned long trascorso = millis() - startPresenza;
       if (trascorso < PRESENCE_INVITE_DELAY_MS) {
-        //int rim = static_cast<int>((PRESENCE_INVITE_DELAY_MS - trascorso) / 1000);
+        // Still counting down: show the progress hint at the bottom.
         tft.fillRect(0, 240, 240, 35, TFT_BLACK);
         tft.setCursor(10, 250);
         tft.setTextColor(TFT_MAGENTA);
         tft.setTextSize(1);
-        //tft.printf("Prenota il tavolo tra: %ds", rim);
         tft.printf("Prenota il tavolo tra: ");
         drawPresenceProgressBlocks(static_cast<uint32_t>(trascorso));
       } else {
@@ -1339,6 +1417,8 @@ void runPresenceAutomations() {
         }
       }
     } else if (startPresenza != 0) {
+      // Presence lost. Keep the invite for a 60s grace if it is already up,
+      // then return to the idle view; otherwise return immediately.
       if (presenceInviteVisible) {
         if (absenceInPurpleScreenStartMs == 0) {
           absenceInPurpleScreenStartMs = millis();

@@ -22,6 +22,13 @@ void setup() {
   Serial.println(WiFi.macAddress());
 }
 
+// Main processing pipeline, a non-blocking state machine:
+//   ST_IDLE         - forwards booking traffic and, when a full UART line is
+//                     ready, parses it and starts sending it to a table;
+//   ST_WAIT_SEND_CB - waits for the ESP-NOW send callback of each chunk, sending
+//                     the next one until the whole JSON has been transmitted;
+//   ST_WAIT_TABLE_ACK - waits for the table's AckPacket (or a timeout) and
+//                     reports the outcome back over UART.
 void loop() {
   flushPendingBookingReqToUart();
   if (state == ST_IDLE) {
@@ -29,10 +36,14 @@ void loop() {
   }
 
   if (state == ST_IDLE && uartLineReady) {
+    // Copy the completed line out of the ISR buffer. Only the actual line length
+    // is copied (not the whole UART_MAX buffer) to keep the interrupts-off window
+    // short. uartBuf is null-terminated by onSerial2Rx() when uartLineReady is set.
     noInterrupts();
     char line[UART_MAX];
-    strncpy(line, uartBuf, sizeof(line));
-    line[sizeof(line) - 1] = '\0';
+    size_t lineLen = strnlen(uartBuf, UART_MAX - 1);
+    memcpy(line, uartBuf, lineLen);
+    line[lineLen] = '\0';
     uartLineReady = false;
     interrupts();
 
@@ -167,6 +178,8 @@ void loop() {
       return;
     }
 
+    // Wraparound-safe deadline check: the signed difference becomes >= 0 once
+    // millis() has passed ackDeadlineMs, even across the 32-bit millis overflow.
     if ((int32_t)(millis() - ackDeadlineMs) >= 0) {
       uartReplyErr(workMsgId, "TABLE_ACK_TIMEOUT");
       state = ST_IDLE;
