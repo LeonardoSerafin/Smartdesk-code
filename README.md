@@ -253,5 +253,5 @@ The Raspberry Pi communicates with an external REST server hosted on fly.dev res
 More infos about the server can be found at: https://github.com/Schwarzoo/smartdesk/
 
 ## Project Links
-- <href="https://github.com/Schwarzoo/smartdesk">Demo Video</href>
-- <href="https://canva.link/smartdesk">Project Presentation</href>
+- <a href="https://github.com/Schwarzoo/smartdesk">Demo Video</a>
+- <a href="https://canva.link/smartdesk">Project Presentation</a>
