@@ -245,3 +245,7 @@ python3 raspberry/raspberry-to-esp.py
 The Raspberry Pi communicates with an external REST server hosted on fly.dev responsible of holding the json of all the reservations, provides the APIs for the reservations and cancelations.
 
 More infos about the server can be found at: https://github.com/Schwarzoo/smartdesk/
+
+## Project Links
+- <href="https://github.com/Schwarzoo/smartdesk">Demo Video</href>
+- <href="https://canva.link/smartdesk">Project Presentation</href>
