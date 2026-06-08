@@ -4,7 +4,7 @@
 #include <esp_arduino_version.h>
 
 const uint8_t* findPeerMac(int tableId) {
-  for (size_t i = 0; i < sizeof(peers) / sizeof(peers[0]); i++) {
+  for (size_t i = 0; i < peersCount; i++) {
     if (peers[i].id == tableId) return peers[i].mac;
   }
   return nullptr;
@@ -143,7 +143,7 @@ void setupEspNow() {
   esp_now_register_send_cb(onEspNowSent);
   esp_now_register_recv_cb(onEspNowRecv);
 
-  for (size_t i = 0; i < sizeof(peers) / sizeof(peers[0]); i++) {
+  for (size_t i = 0; i < peersCount; i++) {
     esp_now_peer_info_t p = {};
     memcpy(p.peer_addr, peers[i].mac, 6);
     p.channel = ESPNOW_CHANNEL;

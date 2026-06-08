@@ -5,6 +5,11 @@ TablePeer peers[] = {
   // {2, {0xAA,0xBB,0xCC,0xDD,0xEE,0xFF}},
 };
 
+// Number of configured peers. Defined here, where peers[] is complete, so other
+// translation units (which only see the extern, incomplete-type declaration)
+// cannot apply sizeof to the array.
+const size_t peersCount = sizeof(peers) / sizeof(peers[0]);
+
 volatile bool uartLineReady = false;
 volatile bool uartOverflow = false;
 volatile size_t uartIdx = 0;

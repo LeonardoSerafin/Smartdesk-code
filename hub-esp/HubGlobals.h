@@ -6,6 +6,7 @@
 #include "Protocol.h"
 
 extern TablePeer peers[];
+extern const size_t peersCount;
 extern volatile bool uartLineReady;
 extern volatile bool uartOverflow;
 extern volatile size_t uartIdx;
